@@ -41,22 +41,25 @@ class StreamerRow(ctk.CTkFrame):
         )
         self._rec_label.pack(side="left", padx=4)
 
-        # Stop recording button
+        # Button container (right-aligned)
+        self._btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._btn_frame.pack(side="right", padx=(4, 8))
+
+        # Stop recording button (hidden until recording)
         self._stop_btn = ctk.CTkButton(
-            self, text="Stop", width=50, fg_color="orange",
-            hover_color="#cc7700",
+            self._btn_frame, text="Stop Recording", width=110, height=28,
+            fg_color="#cc3333", hover_color="#991111",
+            font=ctk.CTkFont(weight="bold"),
             command=lambda: self._on_stop_recording(self.slug),
         )
-        self._stop_btn.pack(side="left", padx=4)
-        self._stop_btn.pack_forget()  # hidden until recording
 
         # Remove button
         self._remove_btn = ctk.CTkButton(
-            self, text="\u2715", width=32, fg_color="red",
-            hover_color="#aa0000",
+            self._btn_frame, text="\u2715", width=32,
+            fg_color="red", hover_color="#aa0000",
             command=lambda: self._on_remove(self.slug),
         )
-        self._remove_btn.pack(side="right", padx=(4, 8))
+        self._remove_btn.pack(side="right", padx=2)
 
     def set_live(self, is_live: bool, title: str = "") -> None:
         if is_live:
@@ -70,11 +73,17 @@ class StreamerRow(ctk.CTkFrame):
     def set_recording(self, is_recording: bool, elapsed: str = "") -> None:
         if is_recording:
             self._rec_label.configure(
-                text=f"\u25cf REC {elapsed}", text_color="#ee3333"
+                text=f"\u25cf REC {elapsed}", text_color="#ff4444",
+                font=ctk.CTkFont(weight="bold"),
             )
-            self._stop_btn.pack(side="left", padx=4, before=self._remove_btn)
+            self.configure(fg_color="#3a1515")
+            self._stop_btn.pack(side="right", padx=2, before=self._remove_btn)
         else:
-            self._rec_label.configure(text="\u2014", text_color="gray")
+            self._rec_label.configure(
+                text="\u2014", text_color="gray",
+                font=ctk.CTkFont(),
+            )
+            self.configure(fg_color="transparent")
             self._stop_btn.pack_forget()
 
 

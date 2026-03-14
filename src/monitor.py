@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 from .config import AppConfig
@@ -61,7 +62,7 @@ class StreamMonitor:
 
     def update_settings(self) -> None:
         """Re-apply settings (output dir, template) from config."""
-        self.recorder.output_dir = self.config.settings.output_dir
+        self.recorder.output_dir = Path(self.config.settings.output_dir)
         self.recorder.filename_template = self.config.settings.filename_template
 
     # ── Background thread ────────────────────────────────────
