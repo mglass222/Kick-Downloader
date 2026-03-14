@@ -40,10 +40,27 @@ class Recorder:
         if info is None:
             return False
         if not info.is_alive():
-            # Process exited on its own (stream ended)
+            # Process exited on its own (stream ended or failed)
             self._cleanup(slug)
             return False
         return True
+
+    def get_exit_info(self, info: RecordingInfo) -> tuple[int, str]:
+        """Return (exit_code, last_output) for a finished process."""
+        code = info.process.returncode or 0
+        output = ""
+        if info.process.stdout:
+            try:
+                remaining = info.process.stdout.read()
+                if remaining:
+                    output = remaining.decode("utf-8", errors="replace").strip()
+                    # Keep only last few lines for relevance
+                    lines = output.splitlines()
+                    if len(lines) > 10:
+                        output = "\n".join(lines[-10:])
+            except Exception:
+                pass
+        return code, output
 
     def get_info(self, slug: str) -> RecordingInfo | None:
         return self._active.get(slug)
@@ -53,7 +70,8 @@ class Recorder:
         if self.is_recording(slug):
             return self._active[slug].output_path
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        channel_dir = self.output_dir / slug
+        channel_dir.mkdir(parents=True, exist_ok=True)
 
         now = datetime.now()
         filename = self.filename_template.format(
@@ -63,14 +81,14 @@ class Recorder:
         )
         if not filename.endswith(".mp4"):
             filename += ".mp4"
-        output_path = self.output_dir / filename
+        output_path = channel_dir / filename
 
         cmd = [
             "yt-dlp",
             f"https://kick.com/{slug}",
             "-o", str(output_path),
             "--no-part",
-            "--live-from-start",
+            "--no-live-from-start",
             "--wait-for-video", "30",
         ]
 
@@ -95,9 +113,9 @@ class Recorder:
             return
         if info.is_alive():
             log.info("Stopping recording for '%s'", slug)
-            info.process.send_signal(signal.SIGINT)
+            info.process.terminate()  # SIGTERM — more reliable than SIGINT for piped processes
             try:
-                info.process.wait(timeout=30)
+                info.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 log.warning("yt-dlp did not exit for '%s', killing", slug)
                 info.process.kill()

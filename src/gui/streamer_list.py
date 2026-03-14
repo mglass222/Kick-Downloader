@@ -77,7 +77,7 @@ class StreamerRow(ctk.CTkFrame):
                 font=ctk.CTkFont(weight="bold"),
             )
             self.configure(fg_color="#3a1515")
-            self._stop_btn.pack(side="right", padx=2, before=self._remove_btn)
+            self._stop_btn.pack(side="right", padx=2)
         else:
             self._rec_label.configure(
                 text="\u2014", text_color="gray",

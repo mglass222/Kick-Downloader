@@ -93,7 +93,26 @@ class StreamMonitor:
 
         # Check for recordings that ended on their own
         for slug in list(self.recorder._active):
-            if not self.recorder.is_recording(slug):
+            info = self.recorder._active.get(slug)
+            if info is None:
+                continue
+            if info.is_alive():
+                continue
+            # Process exited — get details before cleanup
+            elapsed = info.elapsed_seconds()
+            exit_code, output = self.recorder.get_exit_info(info)
+            self.recorder._cleanup(slug)
+
+            if exit_code != 0 or elapsed < 30:
+                # Likely a failure rather than a normal stream end
+                detail = f"Recording failed (exit code {exit_code}, ran {elapsed:.0f}s)"
+                if output:
+                    # Extract last meaningful line for the event
+                    last_line = output.splitlines()[-1]
+                    detail += f" — {last_line}"
+                log.warning("yt-dlp failed for '%s': exit=%d elapsed=%.0fs\n%s", slug, exit_code, elapsed, output)
+                self.on_event(slug, "recording_failed", detail)
+            else:
                 self.on_event(slug, "recording_ended", "Stream ended — recording saved")
 
         # Report next check time

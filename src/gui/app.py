@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import customtkinter as ctk
 
@@ -113,10 +114,14 @@ class App(ctk.CTk):
         self._log(f"Removed streamer: {slug}")
 
     def _stop_recording(self, slug: str) -> None:
-        self.monitor.stop_recording(slug)
+        # Disable button immediately to prevent duplicate clicks
         row = self._streamer_list.get_row(slug)
         if row:
             row.set_recording(False)
+        # Run stop in background thread to avoid blocking UI
+        threading.Thread(
+            target=self.monitor.stop_recording, args=(slug,), daemon=True
+        ).start()
 
     # ── Monitoring controls ──────────────────────────────────
 
@@ -163,7 +168,7 @@ class App(ctk.CTk):
 
         if event == "live":
             row.set_live(True, detail.replace("LIVE — ", ""))
-        elif event in ("offline", "recording_ended"):
+        elif event in ("offline", "recording_ended", "recording_failed"):
             row.set_live(False)
             row.set_recording(False)
         elif event == "recording_started":
