@@ -11,11 +11,11 @@ class LogPanel(ctk.CTkFrame):
     def __init__(self, master: ctk.CTkBaseClass, **kwargs) -> None:
         super().__init__(master, **kwargs)
 
-        label = ctk.CTkLabel(self, text="Log", font=ctk.CTkFont(weight="bold"))
-        label.pack(anchor="w", padx=8, pady=(4, 0))
+        label = ctk.CTkLabel(self, text="Log", font=ctk.CTkFont(size=11), text_color="#888888")
+        label.pack(anchor="w", padx=8, pady=(6, 2))
 
-        self._textbox = ctk.CTkTextbox(self, height=150, state="disabled")
-        self._textbox.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._textbox = ctk.CTkTextbox(self, height=120, state="disabled")
+        self._textbox.pack(fill="both", expand=True, padx=8, pady=(0, 6))
 
     def log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

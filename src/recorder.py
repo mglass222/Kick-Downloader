@@ -41,6 +41,7 @@ class Recorder:
             return False
         if not info.is_alive():
             # Process exited on its own (stream ended or failed)
+            self._remux_to_mp4(info)
             self._cleanup(slug)
             return False
         return True
@@ -79,14 +80,15 @@ class Recorder:
             date=now.strftime("%Y-%m-%d"),
             time=now.strftime("%H-%M-%S"),
         )
-        if not filename.endswith(".mp4"):
-            filename += ".mp4"
-        output_path = channel_dir / filename
+        if filename.endswith(".mp4"):
+            filename = filename[:-4]
+        ts_path = channel_dir / (filename + ".ts")
+        output_path = channel_dir / (filename + ".mp4")
 
         cmd = [
             "yt-dlp",
             f"https://kick.com/{slug}",
-            "-o", str(output_path),
+            "-o", str(ts_path),
             "--no-part",
             "--no-live-from-start",
             "--wait-for-video", "30",
@@ -120,12 +122,42 @@ class Recorder:
                 log.warning("yt-dlp did not exit for '%s', killing", slug)
                 info.process.kill()
                 info.process.wait(timeout=5)
+        self._remux_to_mp4(info)
         self._cleanup(slug)
 
     def stop_all(self) -> None:
         """Stop all active recordings."""
         for slug in list(self._active):
             self.stop(slug)
+
+    def _remux_to_mp4(self, info: RecordingInfo) -> None:
+        """Remux the recorded .ts file to a QuickTime-compatible .mp4."""
+        ts_path = info.output_path.with_suffix(".ts")
+        mp4_path = info.output_path
+        if not ts_path.exists() or ts_path.stat().st_size == 0:
+            return
+        log.info("Remuxing %s → %s", ts_path, mp4_path)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-i", str(ts_path),
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    str(mp4_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=300,
+            )
+            if mp4_path.exists() and mp4_path.stat().st_size > 0:
+                ts_path.unlink()
+                log.info("Remux complete: %s", mp4_path)
+            else:
+                log.error("Remux produced empty file, keeping .ts: %s", ts_path)
+        except FileNotFoundError:
+            log.error("ffmpeg not found — install it to get QuickTime-compatible .mp4 files")
+        except subprocess.TimeoutExpired:
+            log.error("Remux timed out for %s", ts_path)
 
     def _cleanup(self, slug: str) -> None:
         info = self._active.pop(slug, None)

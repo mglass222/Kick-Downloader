@@ -22,8 +22,8 @@ class App(ctk.CTk):
         super().__init__()
 
         self.title("Kick Stream Recorder")
-        self.geometry("750x650")
-        self.minsize(600, 500)
+        self.geometry("700x600")
+        self.minsize(520, 420)
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -38,50 +38,57 @@ class App(ctk.CTk):
         )
 
         # ── Build UI ─────────────────────────────────────────
+        # Pack fixed-height elements first (top and bottom),
+        # then expandable panels fill the remaining space.
 
-        # Add streamer bar
+        # Top: Add streamer bar
         self._add_bar = AddStreamerBar(self, on_add=self._add_streamer)
         self._add_bar.pack(fill="x", padx=10, pady=(10, 4))
 
-        # Streamer list
-        list_label = ctk.CTkLabel(self, text="Streamer List", font=ctk.CTkFont(weight="bold"))
-        list_label.pack(anchor="w", padx=18, pady=(8, 0))
+        # Top: Streamer list header
+        from .streamer_list import create_header
+        self._list_header = create_header(self)
+        self._list_header.pack(fill="x", padx=10, pady=(4, 0))
 
-        self._streamer_list = StreamerList(
-            self,
-            on_remove=self._remove_streamer,
-            on_stop_recording=self._stop_recording,
-            height=200,
+        # Bottom: Control buttons (packed early so they never disappear)
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+
+        self._start_btn = ctk.CTkButton(
+            btn_frame, text="Start Monitoring", height=36,
+            fg_color="#228822", hover_color="#116611",
+            command=self._start_monitoring,
         )
-        self._streamer_list.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        self._start_btn.pack(side="left", padx=(0, 8))
 
-        # Settings panel
+        self._stop_btn = ctk.CTkButton(
+            btn_frame, text="Stop Monitoring", height=36,
+            fg_color="#cc3333", hover_color="#881111",
+            command=self._stop_monitoring,
+        )
+        self._stop_btn.pack(side="left")
+
+        # Bottom: Settings panel (above buttons)
         self._settings_panel = SettingsPanel(
             self,
             settings=self.config_data.settings,
             on_change=self._on_settings_change,
         )
-        self._settings_panel.pack(fill="x", padx=10, pady=4)
+        self._settings_panel.pack(side="bottom", fill="x", padx=10, pady=4)
 
-        # Log panel
+        # Bottom: Log panel (above settings, expands)
         self._log_panel = LogPanel(self)
-        self._log_panel.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+        self._log_panel.pack(side="bottom", fill="both", expand=True, padx=10, pady=4)
 
-        # Control buttons
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        self._start_btn = ctk.CTkButton(
-            btn_frame, text="Start Monitoring", fg_color="green",
-            hover_color="#006600", command=self._start_monitoring,
+        # Middle: Streamer list (expands to fill remaining space)
+        self._streamer_list = StreamerList(
+            self,
+            on_remove=self._remove_streamer,
+            on_stop_recording=self._stop_recording,
+            on_start_recording=self._start_recording,
+            height=150,
         )
-        self._start_btn.pack(side="left", padx=(0, 8))
-
-        self._stop_btn = ctk.CTkButton(
-            btn_frame, text="Stop Monitoring", fg_color="red",
-            hover_color="#880000", command=self._stop_monitoring,
-        )
-        self._stop_btn.pack(side="left")
+        self._streamer_list.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
         # Populate streamer list from config
         for entry in self.config_data.streamers:
@@ -112,6 +119,14 @@ class App(ctk.CTk):
         self.config_data.remove_streamer(slug)
         self._streamer_list.remove_streamer(slug)
         self._log(f"Removed streamer: {slug}")
+
+    def _start_recording(self, slug: str) -> None:
+        row = self._streamer_list.get_row(slug)
+        if row:
+            row.set_recording(True, "00:00")
+        self.monitor.update_settings()
+        path = self.monitor.recorder.start(slug)
+        self._log(f"[{slug}] Manual recording started → {path.name}")
 
     def _stop_recording(self, slug: str) -> None:
         # Disable button immediately to prevent duplicate clicks

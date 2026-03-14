@@ -22,30 +22,33 @@ class SettingsPanel(ctk.CTkFrame):
         self._settings = settings
         self._on_change = on_change
 
-        label = ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(weight="bold"))
-        label.pack(anchor="w", padx=8, pady=(4, 0))
+        label = ctk.CTkLabel(self, text="Settings", font=ctk.CTkFont(size=11), text_color="#888888")
+        label.pack(anchor="w", padx=8, pady=(6, 2))
 
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=8, pady=(0, 8))
+        # Row 1: poll interval
+        row1 = ctk.CTkFrame(self, fg_color="transparent")
+        row1.pack(fill="x", padx=8, pady=(0, 4))
 
-        # Poll interval
-        ctk.CTkLabel(row, text="Poll interval (sec):").pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(row1, text="Poll interval (sec)").pack(side="left", padx=(0, 4))
         self._interval_var = ctk.StringVar(value=str(settings.poll_interval_seconds))
-        self._interval_entry = ctk.CTkEntry(row, textvariable=self._interval_var, width=70)
-        self._interval_entry.pack(side="left", padx=(0, 12))
+        self._interval_entry = ctk.CTkEntry(row1, textvariable=self._interval_var, width=60, height=28)
+        self._interval_entry.pack(side="left")
         self._interval_entry.bind("<FocusOut>", lambda _: self._apply())
         self._interval_entry.bind("<Return>", lambda _: self._apply())
 
-        # Output dir
-        ctk.CTkLabel(row, text="Output dir:").pack(side="left", padx=(0, 4))
+        # Row 2: output dir
+        row2 = ctk.CTkFrame(self, fg_color="transparent")
+        row2.pack(fill="x", padx=8, pady=(0, 6))
+
+        ctk.CTkLabel(row2, text="Output directory").pack(side="left", padx=(0, 4))
         self._dir_var = ctk.StringVar(value=settings.output_dir)
-        self._dir_entry = ctk.CTkEntry(row, textvariable=self._dir_var, width=200)
+        self._dir_entry = ctk.CTkEntry(row2, textvariable=self._dir_var, height=28)
         self._dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self._dir_entry.bind("<FocusOut>", lambda _: self._apply())
         self._dir_entry.bind("<Return>", lambda _: self._apply())
 
         self._browse_btn = ctk.CTkButton(
-            row, text="Browse...", width=80, command=self._browse
+            row2, text="Browse", width=70, height=28, command=self._browse,
         )
         self._browse_btn.pack(side="left")
 

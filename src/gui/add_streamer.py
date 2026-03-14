@@ -17,18 +17,19 @@ class AddStreamerBar(ctk.CTkFrame):
         super().__init__(master, **kwargs)
         self._on_add = on_add
 
-        label = ctk.CTkLabel(self, text="Add Streamer", font=ctk.CTkFont(weight="bold"))
-        label.pack(anchor="w", padx=8, pady=(4, 0))
-
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=8, pady=(0, 8))
+        row.pack(fill="x", padx=8, pady=6)
 
-        ctk.CTkLabel(row, text="Channel slug:").pack(side="left", padx=(0, 4))
-        self._entry = ctk.CTkEntry(row, placeholder_text="e.g. xqc")
-        self._entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._entry = ctk.CTkEntry(
+            row, placeholder_text="Channel name, e.g. xqc", height=32,
+        )
+        self._entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._entry.bind("<Return>", lambda _: self._submit())
 
-        self._btn = ctk.CTkButton(row, text="Add", width=60, command=self._submit)
+        self._btn = ctk.CTkButton(
+            row, text="+ Add", width=70, height=32,
+            command=self._submit,
+        )
         self._btn.pack(side="left")
 
     def _submit(self) -> None:
