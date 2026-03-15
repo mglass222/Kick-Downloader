@@ -9,13 +9,16 @@ A Python desktop application that monitors your favorite Kick.com streamers and 
 ## Features
 
 - **Streamer watchlist** — Build and manage a list of Kick.com streamers to monitor
+- **Auto-start** — Monitoring begins as soon as you launch the app — no button clicks needed
 - **Automatic recording** — Streams are recorded automatically when a streamer goes live
 - **Manual recording** — Start recording a live streamer on demand with the **Record** button
 - **Multi-stream support** — Record multiple streamers simultaneously, each in its own process
 - **Auto-stop** — Recording ends when the stream goes offline or the streamer raids another channel
 - **QuickTime-compatible MP4** — Recordings are remuxed from `.ts` to `.mp4` with `faststart` for native playback on macOS
 - **Live status display** — See which streamers are live, their stream title, viewer count, and recording duration in real time
-- **Configurable settings** — Adjustable poll interval and output directory
+- **Instant live check** — Adding a streamer immediately checks if they're live and shows the Record button
+- **Randomized polling** — Poll intervals are randomized between 1–2 minutes to avoid detection
+- **Configurable settings** — Adjustable output directory
 - **Persistent watchlist** — Your streamer list and settings are saved between sessions
 - **Activity log** — Timestamped log of all events (polls, live detection, recording start/stop, errors)
 
@@ -85,15 +88,15 @@ sudo pacman -S tk ffmpeg
    python -m src.main
    ```
 
-2. **Add streamers** — Type a Kick channel slug (e.g. `xqc`, `gmhikaru`) into the input field and click **Add**.
+2. **Add streamers** — Type a Kick channel slug (e.g. `xqc`, `gmhikaru`) into the input field and click **Add**. The app immediately checks if the streamer is live.
 
-3. **Start monitoring** — Click **Start Monitoring**. The app will poll all streamers in your list every 5 minutes (configurable).
+3. **Automatic monitoring** — Monitoring starts automatically on launch. The app polls all streamers at randomized 1–2 minute intervals.
 
 4. **Automatic recording** — When a streamer goes live, recording starts automatically. The streamer's row will show a red `REC` indicator with elapsed time.
 
 5. **Manual record/stop** — If a streamer is live but not being recorded, click the **Record** button to start. Click **Stop** to end a recording early.
 
-6. **Settings** — Adjust the poll interval (minimum 10 seconds) and output directory in the Settings panel. Click **Browse** to select a folder.
+6. **Settings** — Adjust the output directory in the Settings panel. Click **Browse** to select a folder.
 
 7. **Closing** — When you close the window, all active recordings are gracefully stopped and finalized before the app exits.
 
@@ -104,7 +107,7 @@ Settings and your streamer list are stored in `streamers.json` (created automati
 ```json
 {
   "settings": {
-    "poll_interval_seconds": 300,
+    "poll_interval_seconds": 60,
     "output_dir": "./recordings",
     "filename_template": "{channel}_{date}_{time}"
   },
@@ -145,7 +148,7 @@ Kick-downloader/
 
 ## How It Works
 
-1. **Polling** — A background thread queries `https://kick.com/api/v2/channels/{slug}` for each streamer on your list. Requests use `curl_cffi` to impersonate a Chrome browser TLS fingerprint, which is necessary to avoid Kick's bot detection (403 responses).
+1. **Polling** — A background thread queries `https://kick.com/api/v2/channels/{slug}` for each streamer on your list at randomized 1–2 minute intervals. Requests use `curl_cffi` to impersonate a Chrome browser TLS fingerprint, which is necessary to avoid Kick's bot detection (403 responses).
 
 2. **Recording** — When a channel's `livestream` field is non-null, the app spawns a `yt-dlp` subprocess pointed at `https://kick.com/{slug}`. yt-dlp extracts the HLS stream URL and records it to a `.ts` file.
 
