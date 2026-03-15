@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from pathlib import Path
@@ -71,8 +72,9 @@ class StreamMonitor:
         log.info("Monitor thread started")
         while not self._stop_event.is_set():
             self._poll_all()
-            # Sleep in small increments so we can stop quickly
-            for _ in range(self.config.settings.poll_interval_seconds):
+            # Randomize wait between 60–120s to seem less robotic
+            wait = random.randint(60, 120)
+            for _ in range(wait):
                 if self._stop_event.is_set():
                     break
                 time.sleep(1)
@@ -115,16 +117,7 @@ class StreamMonitor:
             else:
                 self.on_event(slug, "recording_ended", "Stream ended — recording saved")
 
-        # Report next check time
-        interval = self.config.settings.poll_interval_seconds
-        minutes, seconds = divmod(interval, 60)
-        if minutes and seconds:
-            next_str = f"{minutes}m {seconds}s"
-        elif minutes:
-            next_str = f"{minutes}m"
-        else:
-            next_str = f"{seconds}s"
-        self.on_event("", "next_check", f"Next check in {next_str}")
+        self.on_event("", "next_check", "Next check in ~1–2m")
 
     def _poll_one(self, slug: str) -> None:
         status = get_channel_status(slug)

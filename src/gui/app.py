@@ -100,7 +100,9 @@ class App(ctk.CTk):
         # Handle window close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self._log("Ready. Add streamers and click Start Monitoring.")
+        # Auto-start monitoring on launch
+        self._start_monitoring()
+        self._log("Monitoring started — checking every 60s for live streamers.")
 
     # ── Streamer management ──────────────────────────────────
 
@@ -109,8 +111,19 @@ class App(ctk.CTk):
         if self.config_data.add_streamer(slug):
             self._streamer_list.add_streamer(slug)
             self._log(f"Added streamer: {slug}")
+            # Check live status in background so UI doesn't block
+            threading.Thread(
+                target=self._check_live_status, args=(slug,), daemon=True
+            ).start()
         else:
             self._log(f"Streamer '{slug}' already in list or invalid")
+
+    def _check_live_status(self, slug: str) -> None:
+        from ..kick_api import get_channel_status
+        status = get_channel_status(slug)
+        if status.is_live:
+            self.after(0, self._handle_event, slug, "live",
+                       f"LIVE — {status.title or ''}")
 
     def _remove_streamer(self, slug: str) -> None:
         # Stop recording first if active
@@ -202,9 +215,9 @@ class App(ctk.CTk):
                 elapsed = int(info.elapsed_seconds())
                 h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
                 if h > 0:
-                    row.set_recording(True, f"{h}:{m:02d}:{s:02d}")
+                    row.update_elapsed(f"{h}:{m:02d}:{s:02d}")
                 else:
-                    row.set_recording(True, f"{m:02d}:{s:02d}")
+                    row.update_elapsed(f"{m:02d}:{s:02d}")
         self.after(1000, self._update_timer)
 
     # ── Helpers ──────────────────────────────────────────────

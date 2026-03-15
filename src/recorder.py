@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -19,6 +18,8 @@ class RecordingInfo:
     output_path: Path
     process: subprocess.Popen
     started_at: float = field(default_factory=time.time)
+    log_file: object = field(default=None, repr=False)
+    log_path: Path | None = None
 
     def elapsed_seconds(self) -> float:
         return time.time() - self.started_at
@@ -41,6 +42,7 @@ class Recorder:
             return False
         if not info.is_alive():
             # Process exited on its own (stream ended or failed)
+            self._close_log(info)
             self._remux_to_mp4(info)
             self._cleanup(slug)
             return False
@@ -50,15 +52,15 @@ class Recorder:
         """Return (exit_code, last_output) for a finished process."""
         code = info.process.returncode or 0
         output = ""
-        if info.process.stdout:
+        self._close_log(info)
+        if info.log_path and info.log_path.exists():
             try:
-                remaining = info.process.stdout.read()
-                if remaining:
-                    output = remaining.decode("utf-8", errors="replace").strip()
-                    # Keep only last few lines for relevance
-                    lines = output.splitlines()
-                    if len(lines) > 10:
-                        output = "\n".join(lines[-10:])
+                text = info.log_path.read_text(errors="replace").strip()
+                lines = text.splitlines()
+                if len(lines) > 10:
+                    output = "\n".join(lines[-10:])
+                else:
+                    output = text
             except Exception:
                 pass
         return code, output
@@ -94,10 +96,12 @@ class Recorder:
             "--wait-for-video", "30",
         ]
 
+        log_path = channel_dir / (filename + ".ytdlp.log")
         log.info("Starting recording for '%s' → %s", slug, output_path)
+        log_file = open(log_path, "w")  # noqa: SIM115
         process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
         )
 
@@ -105,6 +109,8 @@ class Recorder:
             slug=slug,
             output_path=output_path,
             process=process,
+            log_file=log_file,
+            log_path=log_path,
         )
         return output_path
 
@@ -122,6 +128,7 @@ class Recorder:
                 log.warning("yt-dlp did not exit for '%s', killing", slug)
                 info.process.kill()
                 info.process.wait(timeout=5)
+        self._close_log(info)
         self._remux_to_mp4(info)
         self._cleanup(slug)
 
@@ -159,7 +166,20 @@ class Recorder:
         except subprocess.TimeoutExpired:
             log.error("Remux timed out for %s", ts_path)
 
+    @staticmethod
+    def _close_log(info: RecordingInfo) -> None:
+        if info.log_file and not info.log_file.closed:
+            info.log_file.close()
+
     def _cleanup(self, slug: str) -> None:
         info = self._active.pop(slug, None)
-        if info and info.process.poll() is None:
+        if info is None:
+            return
+        self._close_log(info)
+        if info.process.poll() is None:
             info.process.kill()
+        # Remove log file on successful recordings; keep on failure for debugging
+        if info.log_path and info.log_path.exists():
+            exit_code = info.process.returncode
+            if exit_code == 0:
+                info.log_path.unlink(missing_ok=True)

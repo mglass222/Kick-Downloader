@@ -97,6 +97,10 @@ class StreamerRow(ctk.CTkFrame):
             self.configure(fg_color="transparent")
         self._update_action_buttons()
 
+    def update_elapsed(self, elapsed: str) -> None:
+        """Update only the recording timer text (no layout changes)."""
+        self._rec_label.configure(text=f"\u25cf REC {elapsed}")
+
     def _update_action_buttons(self) -> None:
         self._stop_btn.pack_forget()
         self._start_btn.pack_forget()

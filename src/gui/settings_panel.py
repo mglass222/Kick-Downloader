@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from tkinter import filedialog
 from typing import Callable
 
@@ -41,7 +42,7 @@ class SettingsPanel(ctk.CTkFrame):
         row2.pack(fill="x", padx=8, pady=(0, 6))
 
         ctk.CTkLabel(row2, text="Output directory").pack(side="left", padx=(0, 4))
-        self._dir_var = ctk.StringVar(value=settings.output_dir)
+        self._dir_var = ctk.StringVar(value=str(Path(settings.output_dir).resolve()))
         self._dir_entry = ctk.CTkEntry(row2, textvariable=self._dir_var, height=28)
         self._dir_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self._dir_entry.bind("<FocusOut>", lambda _: self._apply())

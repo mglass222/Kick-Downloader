@@ -17,7 +17,7 @@ class StreamerEntry:
 
 @dataclass
 class Settings:
-    poll_interval_seconds: int = 300
+    poll_interval_seconds: int = 60
     output_dir: str = "./recordings"
     filename_template: str = "{channel}_{date}_{time}"
 
