@@ -156,21 +156,39 @@ class Recorder:
     def _finalize_locked(
         self, info: RecordingInfo, *, expected_stop: bool
     ) -> FinishedRecording:
-        """Close log, remux, pop from _active. Caller must hold self._lock."""
+        """Close log, capture state, remove from _active. Caller must hold self._lock.
+        Then release lock before remuxing to avoid blocking other operations."""
         elapsed = info.elapsed_seconds()
         self._close_log(info)
         exit_code = info.process.returncode
         if exit_code is None:
             exit_code = -1
         output = self._read_log_tail(info)
-        self._remux_to_mp4(info)
+
+        # Remove from active dict before releasing lock
         self._active.pop(info.slug, None)
-        if info.process.poll() is None:
-            info.process.kill()
-        # Keep yt-dlp log on failure for debugging
-        if info.log_path and info.log_path.exists():
-            if exit_code == 0 or expected_stop:
-                info.log_path.unlink(missing_ok=True)
+
+        # Capture process and cleanup state before releasing lock
+        process = info.process
+        log_path = info.log_path
+        should_cleanup_log = (exit_code == 0 or expected_stop) and log_path and log_path.exists()
+
+        # Release lock before blocking operations
+        self._lock.release()
+        try:
+            # Remux outside the lock (can take significant time)
+            self._remux_to_mp4(info)
+
+            # Kill process if still alive
+            if process.poll() is None:
+                process.kill()
+
+            # Keep yt-dlp log on failure for debugging
+            if should_cleanup_log:
+                log_path.unlink(missing_ok=True)
+        finally:
+            self._lock.acquire()
+
         failed = (not expected_stop) and (exit_code != 0 or elapsed < 30)
         return FinishedRecording(
             slug=info.slug,

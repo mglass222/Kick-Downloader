@@ -91,12 +91,14 @@ class StreamerRow(ctk.CTkFrame):
     def _on_enable_clicked(self) -> None:
         self._enabled = bool(self._enabled_var.get())
         self._apply_enabled_style()
+        self._update_action_buttons()
         self._on_toggle_enabled(self.slug, self._enabled)
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
         self._enabled_var.set(enabled)
         self._apply_enabled_style()
+        self._update_action_buttons()
 
     def _apply_enabled_style(self) -> None:
         color = "#cccccc" if self._enabled else "#666666"

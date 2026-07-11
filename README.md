@@ -41,9 +41,9 @@ The GUI features a dark-themed interface with:
 
 **macOS (Homebrew):**
 ```bash
-brew install ffmpeg python-tk@3.14
+brew install ffmpeg python-tk@X.Y
 ```
-> Match `python-tk` to your Homebrew Python version (e.g. `python-tk@3.12`).
+> Match `X.Y` to your Homebrew Python version (e.g. `python-tk@3.12` for Python 3.12).
 
 **Ubuntu/Debian:**
 ```bash
@@ -166,7 +166,7 @@ python -m unittest tests.test_core -v
 
 | Problem | Solution |
 |---|---|
-| `ModuleNotFoundError: No module named 'tkinter'` | macOS: `brew install python-tk@3.14` (match your Python version). Linux: `sudo apt install python3-tk` |
+| `ModuleNotFoundError: No module named 'tkinter'` | macOS: `brew install python-tk@X.Y` (match `X.Y` to your Homebrew Python version). Linux: `sudo apt install python3-tk` |
 | `403 Forbidden` from Kick API | Ensure `curl_cffi` is installed via `pip install -r requirements.txt`. Plain HTTP clients are blocked by Kick's bot detection. |
 | Timeouts when polling | Kick's API can be slow. The default 30-second timeout handles most cases. Check your network connection. |
 | `yt-dlp` not found | Make sure `yt-dlp` is installed in your venv: `pip install yt-dlp` |
