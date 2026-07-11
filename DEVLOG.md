@@ -1,5 +1,7 @@
 # Kick Stream Recorder — Development Log
 
+> Historical notes from initial development (March 2026). Behavior described below may be outdated — see `README.md` for current docs.
+
 **Date:** March 13, 2026
 
 ## Project Overview

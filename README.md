@@ -17,8 +17,9 @@ A Python desktop application that monitors your favorite Kick.com streamers and 
 - **QuickTime-compatible MP4** — Recordings are remuxed from `.ts` to `.mp4` with `faststart` for native playback on macOS
 - **Live status display** — See which streamers are live, their stream title, viewer count, and recording duration in real time
 - **Instant live check** — Adding a streamer immediately checks if they're live and shows the Record button
-- **Randomized polling** — Poll intervals are randomized between 1–2 minutes to avoid detection
-- **Configurable settings** — Adjustable output directory
+- **Randomized polling** — Poll interval is configurable; each wait is randomized around that value to avoid detection
+- **Per-streamer enable** — Toggle monitoring on/off for individual channels without removing them
+- **Configurable settings** — Adjustable poll interval and output directory
 - **Persistent watchlist** — Your streamer list and settings are saved between sessions
 - **Activity log** — Timestamped log of all events (polls, live detection, recording start/stop, errors)
 
@@ -40,9 +41,9 @@ The GUI features a dark-themed interface with:
 
 **macOS (Homebrew):**
 ```bash
-brew install ffmpeg
+brew install ffmpeg python-tk@3.14
 ```
-> Python from Homebrew or python.org includes tkinter. If using a system Python that doesn't, run `brew install python-tk`.
+> Match `python-tk` to your Homebrew Python version (e.g. `python-tk@3.12`).
 
 **Ubuntu/Debian:**
 ```bash
@@ -74,11 +75,6 @@ sudo pacman -S tk ffmpeg
    pip install -r requirements.txt
    ```
 
-3. **Install curl_cffi** (required to bypass Kick's bot detection):
-   ```bash
-   pip install curl_cffi
-   ```
-
 ## Usage
 
 1. **Activate the virtual environment and launch:**
@@ -90,13 +86,13 @@ sudo pacman -S tk ffmpeg
 
 2. **Add streamers** — Type a Kick channel slug (e.g. `xqc`, `gmhikaru`) into the input field and click **Add**. The app immediately checks if the streamer is live.
 
-3. **Automatic monitoring** — Monitoring starts automatically on launch. The app polls all streamers at randomized 1–2 minute intervals.
+3. **Automatic monitoring** — Monitoring starts automatically on launch. Use the **Stop Monitoring** / **Start Monitoring** toggle to pause. Uncheck a streamer to skip them without removing them.
 
-4. **Automatic recording** — When a streamer goes live, recording starts automatically. The streamer's row will show a red `REC` indicator with elapsed time.
+4. **Automatic recording** — When an enabled streamer goes live, recording starts automatically. The streamer's row will show a red `REC` indicator with elapsed time.
 
 5. **Manual record/stop** — If a streamer is live but not being recorded, click the **Record** button to start. Click **Stop** to end a recording early.
 
-6. **Settings** — Adjust the output directory in the Settings panel. Click **Browse** to select a folder.
+6. **Settings** — Adjust the poll interval and output directory in the Settings panel. Click **Browse** to select a folder.
 
 7. **Closing** — When you close the window, all active recordings are gracefully stopped and finalized before the app exits.
 
@@ -130,7 +126,10 @@ Settings and your streamer list are stored in `streamers.json` (created automati
 ```
 Kick-downloader/
 ├── requirements.txt          # Python dependencies
+├── LICENSE                   # MIT
 ├── streamers.json            # Streamer list & settings (created at runtime)
+├── tests/
+│   └── test_core.py          # Unit tests (config, API status, recorder)
 ├── src/
 │   ├── main.py               # Entry point
 │   ├── config.py             # Settings and streamer list persistence
@@ -146,9 +145,16 @@ Kick-downloader/
 └── recordings/               # Recorded streams (created at runtime)
 ```
 
+## Tests
+
+```bash
+source .venv/bin/activate
+python -m unittest tests.test_core -v
+```
+
 ## How It Works
 
-1. **Polling** — A background thread queries `https://kick.com/api/v2/channels/{slug}` for each streamer on your list at randomized 1–2 minute intervals. Requests use `curl_cffi` to impersonate a Chrome browser TLS fingerprint, which is necessary to avoid Kick's bot detection (403 responses).
+1. **Polling** — A background thread queries `https://kick.com/api/v2/channels/{slug}` for each enabled streamer. Wait time is randomized around your configured poll interval. Requests use `curl_cffi` to impersonate a Chrome browser TLS fingerprint, which is necessary to avoid Kick's bot detection (403 responses). Transient API errors are treated as unknown (not offline) so active recordings are not stopped.
 
 2. **Recording** — When a channel's `livestream` field is non-null, the app spawns a `yt-dlp` subprocess pointed at `https://kick.com/{slug}`. yt-dlp extracts the HLS stream URL and records it to a `.ts` file.
 
@@ -160,8 +166,8 @@ Kick-downloader/
 
 | Problem | Solution |
 |---|---|
-| `ModuleNotFoundError: No module named 'tkinter'` | Install the system package: `sudo apt install python3-tk` |
-| `403 Forbidden` from Kick API | Ensure `curl_cffi` is installed. Plain HTTP clients are blocked by Kick's bot detection. |
+| `ModuleNotFoundError: No module named 'tkinter'` | macOS: `brew install python-tk@3.14` (match your Python version). Linux: `sudo apt install python3-tk` |
+| `403 Forbidden` from Kick API | Ensure `curl_cffi` is installed via `pip install -r requirements.txt`. Plain HTTP clients are blocked by Kick's bot detection. |
 | Timeouts when polling | Kick's API can be slow. The default 30-second timeout handles most cases. Check your network connection. |
 | `yt-dlp` not found | Make sure `yt-dlp` is installed in your venv: `pip install yt-dlp` |
 | Recording file is 0 bytes | The stream may have ended before data was captured. Check that ffmpeg is installed. |
