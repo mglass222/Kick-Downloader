@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 
 from curl_cffi import requests as curl_requests
 
@@ -14,14 +15,35 @@ API_URL = "https://kick.com/api/v2/channels/{slug}"
 REQUEST_TIMEOUT = 30
 
 
+class LiveState(Enum):
+    """Channel availability as reported by the API (or lack thereof)."""
+
+    LIVE = "live"
+    OFFLINE = "offline"
+    ERROR = "error"  # request/parse failure — not a confirmed offline
+
+
 @dataclass
 class ChannelStatus:
     slug: str
-    is_live: bool
+    state: LiveState
     playback_url: str | None = None
     title: str | None = None
     viewer_count: int | None = None
     started_at: str | None = None
+    error: str | None = None
+
+    @property
+    def is_live(self) -> bool:
+        return self.state is LiveState.LIVE
+
+    @property
+    def is_offline(self) -> bool:
+        return self.state is LiveState.OFFLINE
+
+    @property
+    def is_error(self) -> bool:
+        return self.state is LiveState.ERROR
 
 
 def get_channel_status(slug: str) -> ChannelStatus:
@@ -30,7 +52,8 @@ def get_channel_status(slug: str) -> ChannelStatus:
     Uses curl_cffi to impersonate a real browser TLS fingerprint,
     which is required to avoid Kick's 403 bot detection.
 
-    Returns a ChannelStatus. On errors, returns is_live=False.
+    On network/HTTP/parse errors, returns state=ERROR (not OFFLINE)
+    so callers do not treat transient failures as stream end.
     """
     url = API_URL.format(slug=slug)
     try:
@@ -43,18 +66,18 @@ def get_channel_status(slug: str) -> ChannelStatus:
         data = resp.json()
     except curl_requests.RequestsError as exc:
         log.warning("Request failed for channel '%s': %s", slug, exc)
-        return ChannelStatus(slug=slug, is_live=False)
+        return ChannelStatus(slug=slug, state=LiveState.ERROR, error=str(exc))
     except Exception as exc:
         log.warning("Unexpected error for channel '%s': %s", slug, exc)
-        return ChannelStatus(slug=slug, is_live=False)
+        return ChannelStatus(slug=slug, state=LiveState.ERROR, error=str(exc))
 
     livestream = data.get("livestream")
     if not livestream:
-        return ChannelStatus(slug=slug, is_live=False)
+        return ChannelStatus(slug=slug, state=LiveState.OFFLINE)
 
     return ChannelStatus(
         slug=slug,
-        is_live=True,
+        state=LiveState.LIVE,
         playback_url=livestream.get("playback_url"),
         title=livestream.get("session_title"),
         viewer_count=livestream.get("viewer_count"),

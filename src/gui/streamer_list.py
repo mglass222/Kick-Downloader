@@ -7,10 +7,10 @@ from typing import Callable
 import customtkinter as ctk
 
 # Fixed column widths so header and rows stay aligned.
-_COL_CHANNEL = 130
+_COL_ENABLE = 36
+_COL_CHANNEL = 120
 _COL_STATUS = 140
 _COL_REC = 110
-_COL_BTNS = 120
 
 
 class StreamerRow(ctk.CTkFrame):
@@ -20,9 +20,11 @@ class StreamerRow(ctk.CTkFrame):
         self,
         master: ctk.CTkBaseClass,
         slug: str,
+        enabled: bool,
         on_remove: Callable[[str], None],
         on_stop_recording: Callable[[str], None],
         on_start_recording: Callable[[str], None],
+        on_toggle_enabled: Callable[[str, bool], None],
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
@@ -30,8 +32,10 @@ class StreamerRow(ctk.CTkFrame):
         self._on_remove = on_remove
         self._on_stop_recording = on_stop_recording
         self._on_start_recording = on_start_recording
+        self._on_toggle_enabled = on_toggle_enabled
         self._is_live = False
         self._is_recording = False
+        self._enabled = enabled
 
         # Pack RIGHT side first so buttons always have space.
         self._btn_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -56,11 +60,20 @@ class StreamerRow(ctk.CTkFrame):
             command=lambda: self._on_start_recording(self.slug),
         )
 
-        # Pack LEFT side: fixed-width label containers.
+        self._enabled_var = ctk.BooleanVar(value=enabled)
+        self._enable_cb = ctk.CTkCheckBox(
+            self,
+            text="",
+            width=_COL_ENABLE,
+            variable=self._enabled_var,
+            command=self._on_enable_clicked,
+        )
+        self._enable_cb.pack(side="left", padx=(8, 0))
+
         self._name_label = ctk.CTkLabel(
             self, text=slug, width=_COL_CHANNEL, anchor="w",
         )
-        self._name_label.pack(side="left", padx=(8, 0))
+        self._name_label.pack(side="left", padx=(4, 0))
 
         self._status_label = ctk.CTkLabel(
             self, text="Offline", width=_COL_STATUS, anchor="w",
@@ -73,6 +86,23 @@ class StreamerRow(ctk.CTkFrame):
             text_color="gray",
         )
         self._rec_label.pack(side="left", padx=4)
+        self._apply_enabled_style()
+
+    def _on_enable_clicked(self) -> None:
+        self._enabled = bool(self._enabled_var.get())
+        self._apply_enabled_style()
+        self._update_action_buttons()
+        self._on_toggle_enabled(self.slug, self._enabled)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._enabled_var.set(enabled)
+        self._apply_enabled_style()
+        self._update_action_buttons()
+
+    def _apply_enabled_style(self) -> None:
+        color = "#cccccc" if self._enabled else "#666666"
+        self._name_label.configure(text_color=color)
 
     def set_live(self, is_live: bool, title: str = "") -> None:
         self._is_live = is_live
@@ -106,7 +136,7 @@ class StreamerRow(ctk.CTkFrame):
         self._start_btn.pack_forget()
         if self._is_recording:
             self._stop_btn.pack(side="right", padx=2)
-        elif self._is_live:
+        elif self._is_live and self._enabled:
             self._start_btn.pack(side="right", padx=2)
 
 
@@ -115,12 +145,21 @@ def create_header(master: ctk.CTkBaseClass) -> ctk.CTkFrame:
     header = ctk.CTkFrame(master, fg_color="transparent")
     hdr_font = ctk.CTkFont(size=11)
 
-    ctk.CTkLabel(header, text="Channel", width=_COL_CHANNEL, anchor="w",
-                 font=hdr_font, text_color="#888888").pack(side="left", padx=(8, 0))
-    ctk.CTkLabel(header, text="Status", width=_COL_STATUS, anchor="w",
-                 font=hdr_font, text_color="#888888").pack(side="left", padx=4)
-    ctk.CTkLabel(header, text="Recording", width=_COL_REC, anchor="w",
-                 font=hdr_font, text_color="#888888").pack(side="left", padx=4)
+    ctk.CTkLabel(
+        header, text="", width=_COL_ENABLE, anchor="w", font=hdr_font,
+    ).pack(side="left", padx=(8, 0))
+    ctk.CTkLabel(
+        header, text="Channel", width=_COL_CHANNEL, anchor="w",
+        font=hdr_font, text_color="#888888",
+    ).pack(side="left", padx=(4, 0))
+    ctk.CTkLabel(
+        header, text="Status", width=_COL_STATUS, anchor="w",
+        font=hdr_font, text_color="#888888",
+    ).pack(side="left", padx=4)
+    ctk.CTkLabel(
+        header, text="Recording", width=_COL_REC, anchor="w",
+        font=hdr_font, text_color="#888888",
+    ).pack(side="left", padx=4)
     return header
 
 
@@ -133,22 +172,26 @@ class StreamerList(ctk.CTkScrollableFrame):
         on_remove: Callable[[str], None],
         on_stop_recording: Callable[[str], None],
         on_start_recording: Callable[[str], None],
+        on_toggle_enabled: Callable[[str, bool], None],
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
         self._on_remove = on_remove
         self._on_stop_recording = on_stop_recording
         self._on_start_recording = on_start_recording
+        self._on_toggle_enabled = on_toggle_enabled
         self._rows: dict[str, StreamerRow] = {}
 
-    def add_streamer(self, slug: str) -> None:
+    def add_streamer(self, slug: str, enabled: bool = True) -> None:
         if slug in self._rows:
             return
         row = StreamerRow(
             self, slug,
+            enabled=enabled,
             on_remove=self._on_remove,
             on_stop_recording=self._on_stop_recording,
             on_start_recording=self._on_start_recording,
+            on_toggle_enabled=self._on_toggle_enabled,
         )
         row.pack(fill="x", pady=1)
         self._rows[slug] = row
