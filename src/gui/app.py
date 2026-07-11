@@ -54,19 +54,17 @@ class App(ctk.CTk):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
 
-        self._start_btn = ctk.CTkButton(
-            btn_frame, text="Start Monitoring", height=36,
-            fg_color="#228822", hover_color="#116611",
-            command=self._start_monitoring,
-        )
-        self._start_btn.pack(side="left", padx=(0, 8))
-
-        self._stop_btn = ctk.CTkButton(
-            btn_frame, text="Stop Monitoring", height=36,
+        self._monitor_btn = ctk.CTkButton(
+            btn_frame, text="Stop Monitoring", height=36, width=160,
             fg_color="#cc3333", hover_color="#881111",
-            command=self._stop_monitoring,
+            command=self._toggle_monitoring,
         )
-        self._stop_btn.pack(side="left")
+        self._monitor_btn.pack(side="left", padx=(0, 8))
+
+        self._status_label = ctk.CTkLabel(
+            btn_frame, text="Monitoring: on", text_color="#53d769",
+        )
+        self._status_label.pack(side="left")
 
         # Bottom: Settings panel (above buttons)
         self._settings_panel = SettingsPanel(
@@ -86,13 +84,14 @@ class App(ctk.CTk):
             on_remove=self._remove_streamer,
             on_stop_recording=self._stop_recording,
             on_start_recording=self._start_recording,
+            on_toggle_enabled=self._toggle_streamer_enabled,
             height=150,
         )
         self._streamer_list.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
         # Populate streamer list from config
         for entry in self.config_data.streamers:
-            self._streamer_list.add_streamer(entry.slug)
+            self._streamer_list.add_streamer(entry.slug, enabled=entry.enabled)
 
         # Timer to update recording elapsed times
         self._update_timer()
@@ -102,21 +101,30 @@ class App(ctk.CTk):
 
         # Auto-start monitoring on launch
         self._start_monitoring()
-        self._log("Monitoring started — checking every 60s for live streamers.")
+        interval = self.config_data.settings.poll_interval_seconds
+        self._log(
+            f"Monitoring started — checking about every {interval}s for live streamers."
+        )
 
     # ── Streamer management ──────────────────────────────────
 
     def _add_streamer(self, slug: str) -> None:
+        from ..config import is_valid_slug
+
         slug = slug.strip().lower()
+        if not is_valid_slug(slug):
+            self._log(
+                f"Invalid channel name '{slug}' — use letters, numbers, _ or -"
+            )
+            return
         if self.config_data.add_streamer(slug):
-            self._streamer_list.add_streamer(slug)
+            self._streamer_list.add_streamer(slug, enabled=True)
             self._log(f"Added streamer: {slug}")
-            # Check live status in background so UI doesn't block
             threading.Thread(
                 target=self._check_live_status, args=(slug,), daemon=True
             ).start()
         else:
-            self._log(f"Streamer '{slug}' already in list or invalid")
+            self._log(f"Streamer '{slug}' already in list")
 
     def _check_live_status(self, slug: str) -> None:
         from ..kick_api import get_channel_status
@@ -124,14 +132,31 @@ class App(ctk.CTk):
         if status.is_live:
             self.after(0, self._handle_event, slug, "live",
                        f"LIVE — {status.title or ''}")
+        elif status.is_error:
+            self.after(
+                0,
+                self._handle_event,
+                slug,
+                "api_error",
+                f"API error — {status.error or 'unknown'}",
+            )
 
     def _remove_streamer(self, slug: str) -> None:
-        # Stop recording first if active
         if self.monitor.recorder.is_recording(slug):
             self.monitor.stop_recording(slug)
         self.config_data.remove_streamer(slug)
         self._streamer_list.remove_streamer(slug)
         self._log(f"Removed streamer: {slug}")
+
+    def _toggle_streamer_enabled(self, slug: str, enabled: bool) -> None:
+        self.config_data.set_enabled(slug, enabled)
+        if not enabled and self.monitor.recorder.is_recording(slug):
+            self.monitor.stop_recording(slug)
+            row = self._streamer_list.get_row(slug)
+            if row:
+                row.set_recording(False)
+        state = "enabled" if enabled else "disabled"
+        self._log(f"[{slug}] Monitoring {state}")
 
     def _start_recording(self, slug: str) -> None:
         row = self._streamer_list.get_row(slug)
@@ -142,46 +167,71 @@ class App(ctk.CTk):
         self._log(f"[{slug}] Manual recording started → {path.name}")
 
     def _stop_recording(self, slug: str) -> None:
-        # Disable button immediately to prevent duplicate clicks
         row = self._streamer_list.get_row(slug)
         if row:
             row.set_recording(False)
-        # Run stop in background thread to avoid blocking UI
         threading.Thread(
             target=self.monitor.stop_recording, args=(slug,), daemon=True
         ).start()
 
     # ── Monitoring controls ──────────────────────────────────
 
+    def _toggle_monitoring(self) -> None:
+        if self.monitor.running:
+            self._stop_monitoring()
+        else:
+            self._start_monitoring()
+
     def _start_monitoring(self) -> None:
         if self.monitor.running:
-            self._log("Already monitoring")
+            self._refresh_monitor_ui()
             return
         self.monitor.update_settings()
         self.monitor.start()
+        self._refresh_monitor_ui()
 
     def _stop_monitoring(self) -> None:
-        if not self.monitor.running:
-            self._log("Not currently monitoring")
-            return
-        self.monitor.stop()
-        # Reset all row states
+        if self.monitor.running:
+            self.monitor.stop()
         for slug in self._streamer_list.all_slugs():
             row = self._streamer_list.get_row(slug)
             if row:
                 row.set_recording(False)
+        self._refresh_monitor_ui()
+
+    def _refresh_monitor_ui(self) -> None:
+        if self.monitor.running:
+            self._monitor_btn.configure(
+                text="Stop Monitoring",
+                fg_color="#cc3333",
+                hover_color="#881111",
+            )
+            self._status_label.configure(
+                text="Monitoring: on", text_color="#53d769",
+            )
+        else:
+            self._monitor_btn.configure(
+                text="Start Monitoring",
+                fg_color="#228822",
+                hover_color="#116611",
+            )
+            self._status_label.configure(
+                text="Monitoring: off", text_color="gray",
+            )
 
     # ── Settings ─────────────────────────────────────────────
 
     def _on_settings_change(self, settings: Settings) -> None:
         self.config_data.save()
         self.monitor.update_settings()
-        self._log(f"Settings updated — interval: {settings.poll_interval_seconds}s, dir: {settings.output_dir}")
+        self._log(
+            f"Settings updated — interval: {settings.poll_interval_seconds}s, "
+            f"dir: {settings.output_dir}"
+        )
 
     # ── Monitor events (called from background thread) ───────
 
     def _on_monitor_event(self, slug: str, event: str, detail: str) -> None:
-        # Schedule UI update on the main thread
         self.after(0, self._handle_event, slug, event, detail)
 
     def _handle_event(self, slug: str, event: str, detail: str) -> None:
@@ -190,12 +240,19 @@ class App(ctk.CTk):
         else:
             self._log(detail)
 
+        if event in ("monitor",):
+            self._refresh_monitor_ui()
+
         row = self._streamer_list.get_row(slug) if slug else None
         if row is None:
             return
 
         if event == "live":
             row.set_live(True, detail.replace("LIVE — ", ""))
+        elif event == "api_error":
+            pass
+        elif event == "status_offline":
+            row.set_live(False)
         elif event in ("offline", "recording_ended", "recording_failed"):
             row.set_live(False)
             row.set_recording(False)
