@@ -143,7 +143,7 @@ class App(ctk.CTk):
 
     def _remove_streamer(self, slug: str) -> None:
         if self.monitor.recorder.is_recording(slug):
-            self.monitor.stop_recording(slug)
+            self._stop_recording(slug)
         self.config_data.remove_streamer(slug)
         self._streamer_list.remove_streamer(slug)
         self._log(f"Removed streamer: {slug}")
@@ -151,10 +151,7 @@ class App(ctk.CTk):
     def _toggle_streamer_enabled(self, slug: str, enabled: bool) -> None:
         self.config_data.set_enabled(slug, enabled)
         if not enabled and self.monitor.recorder.is_recording(slug):
-            self.monitor.stop_recording(slug)
-            row = self._streamer_list.get_row(slug)
-            if row:
-                row.set_recording(False)
+            self._stop_recording(slug)
         state = "enabled" if enabled else "disabled"
         self._log(f"[{slug}] Monitoring {state}")
 
@@ -191,12 +188,20 @@ class App(ctk.CTk):
         self._refresh_monitor_ui()
 
     def _stop_monitoring(self) -> None:
-        if self.monitor.running:
+        if not self.monitor.running:
+            return
+        self._monitor_btn.configure(state="disabled")
+        def _stop_worker():
             self.monitor.stop()
+            self.after(0, self._on_monitor_stopped)
+        threading.Thread(target=_stop_worker, daemon=True).start()
+
+    def _on_monitor_stopped(self) -> None:
         for slug in self._streamer_list.all_slugs():
             row = self._streamer_list.get_row(slug)
             if row:
                 row.set_recording(False)
+        self._monitor_btn.configure(state="normal")
         self._refresh_monitor_ui()
 
     def _refresh_monitor_ui(self) -> None:

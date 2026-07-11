@@ -124,6 +124,12 @@ def is_valid_slug(slug: str) -> bool:
 def _settings_from_dict(raw: dict) -> Settings:
     allowed = {f.name for f in fields(Settings)}
     cleaned = {k: v for k, v in raw.items() if k in allowed}
+    # Coerce poll_interval_seconds to int if present
+    if "poll_interval_seconds" in cleaned:
+        try:
+            cleaned["poll_interval_seconds"] = int(cleaned["poll_interval_seconds"])
+        except (ValueError, TypeError):
+            cleaned["poll_interval_seconds"] = 60
     try:
         settings = Settings(**cleaned)
     except TypeError:
