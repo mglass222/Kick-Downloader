@@ -1,4 +1,9 @@
-"""Manages yt-dlp subprocesses for recording Kick streams."""
+"""yt-dlp subprocess management for recording Kick live streams.
+
+Each active channel gets one subprocess writing a ``.ts`` file. On stop
+or natural exit the file is remuxed to QuickTime-friendly ``.mp4`` via
+ffmpeg. All mutations of the active-recording map are guarded by a lock.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,17 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class RecordingInfo:
+    """Metadata for one in-progress (or just-exited) yt-dlp recording.
+
+    Attributes:
+        slug: Channel being recorded.
+        output_path: Target ``.mp4`` path after remux.
+        process: The yt-dlp :class:`~subprocess.Popen` handle.
+        started_at: ``time.time()`` when recording started.
+        log_file: Open file handle receiving yt-dlp stdout/stderr.
+        log_path: Path to the ``.ytdlp.log`` sidecar file.
+    """
+
     slug: str
     output_path: Path
     process: subprocess.Popen
@@ -23,15 +39,26 @@ class RecordingInfo:
     log_path: Path | None = None
 
     def elapsed_seconds(self) -> float:
+        """Seconds since this recording started."""
         return time.time() - self.started_at
 
     def is_alive(self) -> bool:
+        """True if the yt-dlp process has not exited yet."""
         return self.process.poll() is None
 
 
 @dataclass
 class FinishedRecording:
-    """Result of reaping a yt-dlp process that has exited."""
+    """Result of finalizing a yt-dlp process that has exited.
+
+    Attributes:
+        slug: Channel that was recorded.
+        exit_code: Process return code (``-1`` if unknown).
+        elapsed_seconds: How long the process ran.
+        output: Tail of the yt-dlp log for diagnostics.
+        failed: True when the exit looks like a failure (non-zero or
+            very short), unless the stop was expected/manual.
+    """
 
     slug: str
     exit_code: int
@@ -41,25 +68,40 @@ class FinishedRecording:
 
 
 class Recorder:
-    """Manages one yt-dlp subprocess per streamer."""
+    """Manages one yt-dlp subprocess per streamer.
+
+    ``is_recording`` is read-only; call :meth:`reap_finished` (or
+    :meth:`stop`) to remux and remove dead entries.
+    """
 
     def __init__(self, output_dir: str, filename_template: str) -> None:
+        """Create a recorder writing under ``output_dir``.
+
+        Args:
+            output_dir: Root folder for per-channel recording directories.
+            filename_template: Format with ``{channel}``, ``{date}``, ``{time}``.
+        """
         self.output_dir = Path(output_dir)
         self.filename_template = filename_template
         self._active: dict[str, RecordingInfo] = {}
         self._lock = threading.Lock()
 
     def is_recording(self, slug: str) -> bool:
-        """Return True if a yt-dlp process for slug is still running (read-only)."""
+        """Return True if a yt-dlp process for ``slug`` is still running.
+
+        This check has no side effects (no remux or cleanup).
+        """
         with self._lock:
             info = self._active.get(slug)
             return info is not None and info.is_alive()
 
     def get_info(self, slug: str) -> RecordingInfo | None:
+        """Return the active :class:`RecordingInfo` for ``slug``, if any."""
         with self._lock:
             return self._active.get(slug)
 
     def active_slugs(self) -> list[str]:
+        """Return slugs currently tracked in the active map (alive or stale)."""
         with self._lock:
             return list(self._active)
 
@@ -79,7 +121,14 @@ class Recorder:
         return finished
 
     def start(self, slug: str) -> Path:
-        """Start recording a channel. Returns the output file path."""
+        """Start recording a channel.
+
+        If already recording, returns the existing output path. A stale
+        dead entry for the same slug is finalized before a new start.
+
+        Returns:
+            Path to the eventual ``.mp4`` output file.
+        """
         with self._lock:
             existing = self._active.get(slug)
             if existing is not None and existing.is_alive():
@@ -130,7 +179,11 @@ class Recorder:
             return output_path
 
     def stop(self, slug: str) -> FinishedRecording | None:
-        """Gracefully stop recording a channel."""
+        """Gracefully stop recording a channel (SIGTERM, then kill).
+
+        Returns:
+            Finalize result, or None if nothing was active for ``slug``.
+        """
         with self._lock:
             info = self._active.get(slug)
             if info is None:
@@ -147,7 +200,7 @@ class Recorder:
             return self._finalize_locked(info, expected_stop=True)
 
     def stop_all(self) -> None:
-        """Stop all active recordings."""
+        """Stop every active recording."""
         with self._lock:
             slugs = list(self._active)
         for slug in slugs:
@@ -156,8 +209,11 @@ class Recorder:
     def _finalize_locked(
         self, info: RecordingInfo, *, expected_stop: bool
     ) -> FinishedRecording:
-        """Close log, capture state, remove from _active. Caller must hold self._lock.
-        Then release lock before remuxing to avoid blocking other operations."""
+        """Close log, capture state, and remove ``info`` from ``_active``.
+
+        Caller must hold ``self._lock``. The lock is released before remux
+        (which can block) and re-acquired afterward.
+        """
         elapsed = info.elapsed_seconds()
         self._close_log(info)
         exit_code = info.process.returncode
@@ -200,6 +256,7 @@ class Recorder:
 
     @staticmethod
     def _read_log_tail(info: RecordingInfo) -> str:
+        """Return the last lines of the yt-dlp log for error reporting."""
         if not info.log_path or not info.log_path.exists():
             return ""
         try:
@@ -212,7 +269,11 @@ class Recorder:
             return ""
 
     def _remux_to_mp4(self, info: RecordingInfo) -> None:
-        """Remux the recorded .ts file to a QuickTime-compatible .mp4."""
+        """Remux the recorded ``.ts`` to a QuickTime-compatible ``.mp4``.
+
+        Only deletes the ``.ts`` when ffmpeg exits 0 and the ``.mp4`` is
+        non-empty. On failure the ``.ts`` is kept.
+        """
         ts_path = info.output_path.with_suffix(".ts")
         mp4_path = info.output_path
         if not ts_path.exists() or ts_path.stat().st_size == 0:
@@ -256,5 +317,6 @@ class Recorder:
 
     @staticmethod
     def _close_log(info: RecordingInfo) -> None:
+        """Flush/close the yt-dlp log file handle if still open."""
         if info.log_file and not info.log_file.closed:
             info.log_file.close()
