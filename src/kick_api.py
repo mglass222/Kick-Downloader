@@ -1,4 +1,8 @@
-"""Kick.com API client — checks channel live status via the v2 API."""
+"""Kick.com API client for channel live-status checks.
+
+Uses the public v2 channels endpoint with ``curl_cffi`` Chrome TLS
+impersonation so Kick's bot detection does not return HTTP 403.
+"""
 
 from __future__ import annotations
 
@@ -16,15 +20,31 @@ REQUEST_TIMEOUT = 30
 
 
 class LiveState(Enum):
-    """Channel availability as reported by the API (or lack thereof)."""
+    """Channel availability as reported by the API (or lack thereof).
+
+    ``ERROR`` means the request failed — it is *not* a confirmed offline
+    state and must not be used to stop an active recording.
+    """
 
     LIVE = "live"
     OFFLINE = "offline"
-    ERROR = "error"  # request/parse failure — not a confirmed offline
+    ERROR = "error"
 
 
 @dataclass
 class ChannelStatus:
+    """Live-status snapshot for a single Kick channel.
+
+    Attributes:
+        slug: Channel name that was queried.
+        state: Live / offline / error classification.
+        playback_url: HLS URL when live, else None.
+        title: Stream session title when live.
+        viewer_count: Current viewers when live.
+        started_at: Stream start timestamp from the API when live.
+        error: Human-readable error detail when ``state`` is ERROR.
+    """
+
     slug: str
     state: LiveState
     playback_url: str | None = None
@@ -35,14 +55,17 @@ class ChannelStatus:
 
     @property
     def is_live(self) -> bool:
+        """True when the channel is confirmed live."""
         return self.state is LiveState.LIVE
 
     @property
     def is_offline(self) -> bool:
+        """True when the API confirmed the channel is offline."""
         return self.state is LiveState.OFFLINE
 
     @property
     def is_error(self) -> bool:
+        """True when the status could not be determined."""
         return self.state is LiveState.ERROR
 
 
@@ -52,8 +75,14 @@ def get_channel_status(slug: str) -> ChannelStatus:
     Uses curl_cffi to impersonate a real browser TLS fingerprint,
     which is required to avoid Kick's 403 bot detection.
 
-    On network/HTTP/parse errors, returns state=ERROR (not OFFLINE)
+    On network/HTTP/parse errors, returns ``state=ERROR`` (not OFFLINE)
     so callers do not treat transient failures as stream end.
+
+    Args:
+        slug: Kick channel name (already normalized by the caller).
+
+    Returns:
+        A :class:`ChannelStatus` describing live, offline, or error.
     """
     url = API_URL.format(slug=slug)
     try:

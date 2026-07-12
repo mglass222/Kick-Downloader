@@ -1,4 +1,4 @@
-"""Add streamer input bar widget."""
+"""Add-streamer input bar widget."""
 
 from __future__ import annotations
 
@@ -8,12 +8,24 @@ import customtkinter as ctk
 
 
 class AddStreamerBar(ctk.CTkFrame):
+    """Text entry and Add button for Kick channel slugs.
+
+    Submitting (button or Enter) calls ``on_add`` with the raw entry text
+    and clears the field. Validation is left to the parent.
+    """
+
     def __init__(
         self,
         master: ctk.CTkBaseClass,
         on_add: Callable[[str], None],
         **kwargs,
     ) -> None:
+        """Create the input bar.
+
+        Args:
+            master: Parent widget.
+            on_add: Callback invoked with the entered slug when submitted.
+        """
         super().__init__(master, **kwargs)
         self._on_add = on_add
 
@@ -33,6 +45,7 @@ class AddStreamerBar(ctk.CTkFrame):
         self._btn.pack(side="left")
 
     def _submit(self) -> None:
+        """Forward a non-empty slug to ``on_add`` and clear the entry."""
         slug = self._entry.get().strip()
         if slug:
             self._on_add(slug)
