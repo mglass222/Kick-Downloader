@@ -313,11 +313,27 @@ def test_malformed_json_shapes_return_error() -> None:
     assert status.is_error
     assert "JSON object" in (status.error or "")
 
-    resp.json.return_value = {"livestream": ["bad"]}
+
+@pytest.mark.parametrize("livestream", [["bad"], [], "", 0, False])
+def test_malformed_livestream_returns_error(livestream: object) -> None:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"livestream": livestream}
     with patch("src.kick_api.curl_requests.get", return_value=resp):
         status = get_channel_status("xqc")
     assert status.is_error
     assert "livestream" in (status.error or "")
+
+
+def test_null_livestream_is_offline() -> None:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"livestream": None}
+    with patch("src.kick_api.curl_requests.get", return_value=resp):
+        status = get_channel_status("xqc")
+    assert status.is_offline
 
 
 def test_start_wraps_setup_errors(tmp_path: Path) -> None:
@@ -392,7 +408,11 @@ def test_stop_defers_finalize_if_worker_alive(tmp_path: Path) -> None:
                 if info is not None and not info.is_alive():
                     break
                 time.sleep(0.01)
-            rec.reap_finished()
+            finished = rec.reap_finished()
+
+    assert len(finished) == 1
+    assert finished[0].slug == "xqc"
+    assert not rec.is_recording("xqc")
 
 
 def test_channel_status_properties() -> None:

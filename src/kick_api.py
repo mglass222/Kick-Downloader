@@ -169,7 +169,7 @@ def get_channel_status(slug: str) -> ChannelStatus:
             )
 
         livestream = data.get("livestream")
-        if not livestream:
+        if livestream is None:
             return ChannelStatus(slug=slug, state=LiveState.OFFLINE)
 
         if not isinstance(livestream, dict):
