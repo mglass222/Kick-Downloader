@@ -173,11 +173,20 @@ class App(ctk.CTk):
 
     def _start_recording(self, slug: str) -> None:
         """Start a manual recording for a live (or soon-to-be-live) channel."""
+        from ..recorder import RecordingStartError
+
+        self.monitor.update_settings()
+        try:
+            path = self.monitor.recorder.start(slug)
+        except RecordingStartError as exc:
+            row = self._streamer_list.get_row(slug)
+            if row:
+                row.set_recording(False)
+            self._log(f"[{slug}] {exc}")
+            return
         row = self._streamer_list.get_row(slug)
         if row:
             row.set_recording(True, "00:00")
-        self.monitor.update_settings()
-        path = self.monitor.recorder.start(slug)
         self._log(f"[{slug}] Manual recording started → {path.name}")
 
     def _stop_recording(self, slug: str) -> None:
@@ -252,12 +261,12 @@ class App(ctk.CTk):
     # ── Settings ─────────────────────────────────────────────
 
     def _on_settings_change(self, settings: Settings) -> None:
-        """Persist settings and push output-dir/template to the recorder."""
+        """Persist settings and push output-dir/template/quality to the recorder."""
         self.config_data.save()
         self.monitor.update_settings()
         self._log(
             f"Settings updated — interval: {settings.poll_interval_seconds}s, "
-            f"dir: {settings.output_dir}"
+            f"quality: {settings.quality}, dir: {settings.output_dir}"
         )
 
     # ── Monitor events (called from background thread) ───────

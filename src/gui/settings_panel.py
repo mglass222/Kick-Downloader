@@ -1,21 +1,35 @@
-"""Settings panel for poll interval and recording output directory."""
+"""Settings panel for poll interval, quality, and recording output directory."""
 
 from __future__ import annotations
 
+import platform
+import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog
-from typing import Callable
 
 import customtkinter as ctk
 
-from ..config import Settings
+from ..config import QUALITY_CHOICES, Settings
+
+
+def open_directory(path: Path) -> None:
+    """Open ``path`` in the system file manager (macOS/Linux)."""
+    path.mkdir(parents=True, exist_ok=True)
+    system = platform.system()
+    if system == "Darwin":
+        subprocess.Popen(["open", str(path)])  # noqa: S603
+    elif system == "Windows":
+        subprocess.Popen(["explorer", str(path)])  # noqa: S603
+    else:
+        subprocess.Popen(["xdg-open", str(path)])  # noqa: S603
 
 
 class SettingsPanel(ctk.CTkFrame):
     """Inline editors that mutate a shared :class:`~src.config.Settings` object.
 
-    Changes are applied on Enter / focus-out / Browse and reported via
-    ``on_change`` so the parent can persist and push updates to the monitor.
+    Changes are applied on Enter / focus-out / Browse / quality change and
+    reported via ``on_change`` so the parent can persist and push updates.
     """
 
     def __init__(
@@ -41,7 +55,7 @@ class SettingsPanel(ctk.CTkFrame):
         )
         label.pack(anchor="w", padx=8, pady=(6, 2))
 
-        # Row 1: poll interval
+        # Row 1: poll interval + quality
         row1 = ctk.CTkFrame(self, fg_color="transparent")
         row1.pack(fill="x", padx=8, pady=(0, 4))
 
@@ -53,6 +67,19 @@ class SettingsPanel(ctk.CTkFrame):
         self._interval_entry.pack(side="left")
         self._interval_entry.bind("<FocusOut>", lambda _: self._apply())
         self._interval_entry.bind("<Return>", lambda _: self._apply())
+
+        ctk.CTkLabel(row1, text="Quality").pack(side="left", padx=(12, 4))
+        quality = settings.quality if settings.quality in QUALITY_CHOICES else "best"
+        self._quality_var = ctk.StringVar(value=quality)
+        self._quality_menu = ctk.CTkOptionMenu(
+            row1,
+            values=list(QUALITY_CHOICES),
+            variable=self._quality_var,
+            width=90,
+            height=28,
+            command=lambda _: self._apply(),
+        )
+        self._quality_menu.pack(side="left")
 
         # Row 2: output dir
         row2 = ctk.CTkFrame(self, fg_color="transparent")
@@ -68,7 +95,12 @@ class SettingsPanel(ctk.CTkFrame):
         self._browse_btn = ctk.CTkButton(
             row2, text="Browse", width=70, height=28, command=self._browse,
         )
-        self._browse_btn.pack(side="left")
+        self._browse_btn.pack(side="left", padx=(0, 4))
+
+        self._open_btn = ctk.CTkButton(
+            row2, text="Open Folder", width=100, height=28, command=self._open_folder,
+        )
+        self._open_btn.pack(side="left")
 
     def _browse(self) -> None:
         """Open a folder picker and apply the chosen output directory."""
@@ -76,6 +108,11 @@ class SettingsPanel(ctk.CTkFrame):
         if path:
             self._dir_var.set(path)
             self._apply()
+
+    def _open_folder(self) -> None:
+        """Open the configured output directory in the system file manager."""
+        self._apply()
+        open_directory(Path(self._settings.output_dir).expanduser())
 
     def _apply(self) -> None:
         """Validate inputs, update ``settings``, and notify ``on_change``."""
@@ -86,8 +123,14 @@ class SettingsPanel(ctk.CTkFrame):
         except ValueError:
             interval = self._settings.poll_interval_seconds
 
+        quality = self._quality_var.get().strip().lower()
+        if quality not in QUALITY_CHOICES:
+            quality = "best"
+            self._quality_var.set(quality)
+
         self._settings.poll_interval_seconds = interval
         self._settings.output_dir = (
             self._dir_var.get().strip() or self._settings.output_dir
         )
+        self._settings.quality = quality
         self._on_change(self._settings)
