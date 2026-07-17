@@ -12,7 +12,7 @@ A Python desktop application that monitors your favorite Kick.com streamers and 
 - **Auto-start** — Monitoring begins as soon as you launch the app — no button clicks needed
 - **Automatic recording** — Streams are recorded automatically when a streamer goes live
 - **Manual recording** — Start recording a live streamer on demand with the **Record** button
-- **Multi-stream support** — Record multiple streamers simultaneously, each in its own process
+- **Multi-stream support** — Record multiple streamers simultaneously, each on its own worker thread
 - **Auto-stop** — Recording ends when the stream goes offline or the streamer raids another channel
 - **QuickTime-compatible MP4** — Recordings are remuxed from `.ts` to `.mp4` with `faststart` for native playback on macOS
 - **Live status display** — See which streamers are live, their stream title, viewer count, and recording duration in real time

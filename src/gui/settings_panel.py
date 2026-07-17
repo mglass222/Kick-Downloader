@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import platform
 import subprocess
 from collections.abc import Callable
@@ -12,17 +13,22 @@ import customtkinter as ctk
 
 from ..config import QUALITY_CHOICES, Settings
 
+log = logging.getLogger(__name__)
+
 
 def open_directory(path: Path) -> None:
-    """Open ``path`` in the system file manager (macOS/Linux)."""
+    """Open ``path`` in the system file manager (macOS/Linux/Windows)."""
     path.mkdir(parents=True, exist_ok=True)
     system = platform.system()
-    if system == "Darwin":
-        subprocess.Popen(["open", str(path)])  # noqa: S603
-    elif system == "Windows":
-        subprocess.Popen(["explorer", str(path)])  # noqa: S603
-    else:
-        subprocess.Popen(["xdg-open", str(path)])  # noqa: S603
+    try:
+        if system == "Darwin":
+            subprocess.Popen(["open", str(path)])  # noqa: S603
+        elif system == "Windows":
+            subprocess.Popen(["explorer", str(path)])  # noqa: S603
+        else:
+            subprocess.Popen(["xdg-open", str(path)])  # noqa: S603
+    except (FileNotFoundError, OSError) as exc:
+        log.warning("Could not open directory %s: %s", path, exc)
 
 
 class SettingsPanel(ctk.CTkFrame):

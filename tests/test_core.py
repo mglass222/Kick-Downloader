@@ -74,18 +74,16 @@ def test_corrupt_json_falls_back(tmp_path: Path) -> None:
 
 def test_set_enabled(tmp_path: Path) -> None:
     path = tmp_path / "streamers.json"
-    import src.config as config_mod
-
-    with patch.object(config_mod, "DEFAULT_CONFIG_PATH", path):
-        cfg = AppConfig(
-            settings=Settings(),
-            streamers=[StreamerEntry(slug="xqc", enabled=True)],
-        )
-        cfg.save()
+    cfg = AppConfig(
+        settings=Settings(),
+        streamers=[StreamerEntry(slug="xqc", enabled=True)],
+    )
+    cfg.save(path)
+    with patch.object(cfg, "save", lambda: AppConfig.save(cfg, path)):
         assert cfg.set_enabled("xqc", False)
-        reloaded = AppConfig.load()
-        assert reloaded.get_enabled_slugs() == []
-        assert not reloaded.streamers[0].enabled
+    reloaded = AppConfig.load(path)
+    assert reloaded.get_enabled_slugs() == []
+    assert not reloaded.streamers[0].enabled
 
 
 def test_invalid_quality_falls_back_to_best(tmp_path: Path) -> None:
@@ -302,6 +300,99 @@ def test_worker_exception_marks_failed(tmp_path: Path) -> None:
     assert len(finished) == 1
     assert finished[0].failed is True
     assert finished[0].exit_code == 1
+
+
+def test_malformed_json_shapes_return_error() -> None:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+
+    resp.json.return_value = ["not", "an", "object"]
+    with patch("src.kick_api.curl_requests.get", return_value=resp):
+        status = get_channel_status("xqc")
+    assert status.is_error
+    assert "JSON object" in (status.error or "")
+
+    resp.json.return_value = {"livestream": ["bad"]}
+    with patch("src.kick_api.curl_requests.get", return_value=resp):
+        status = get_channel_status("xqc")
+    assert status.is_error
+    assert "livestream" in (status.error or "")
+
+
+def test_start_wraps_setup_errors(tmp_path: Path) -> None:
+    rec = Recorder(str(tmp_path), "{channel}_{missing}", quality="best")
+    usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
+    with patch("src.recorder.shutil.disk_usage", return_value=usage):
+        with pytest.raises(RecordingStartError, match="Cannot start recording"):
+            rec.start("xqc")
+
+
+def test_remux_failure_marks_failed(tmp_path: Path) -> None:
+    rec = Recorder(str(tmp_path), "{channel}_{date}_{time}", quality="best")
+    usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
+    ydl = MagicMock()
+    ydl.download.return_value = 0
+    ydl.__enter__ = MagicMock(return_value=ydl)
+    ydl.__exit__ = MagicMock(return_value=False)
+
+    with patch("src.recorder.shutil.disk_usage", return_value=usage):
+        with patch("src.recorder.YoutubeDL", return_value=ydl):
+            path = rec.start("xqc")
+            for _ in range(50):
+                info = rec.get_info("xqc")
+                if info is not None and not info.is_alive():
+                    break
+                time.sleep(0.01)
+            # Simulate downloaded media that needs remux
+            info = rec.get_info("xqc")
+            assert info is not None
+            ts = path.with_suffix(".ts")
+            ts.write_bytes(b"fake-ts-data")
+            info.ts_path = ts
+            with patch(
+                "src.recorder.subprocess.run",
+                return_value=MagicMock(returncode=1, stderr="ffmpeg boom"),
+            ):
+                finished = rec.reap_finished()
+
+    assert len(finished) == 1
+    assert finished[0].failed is True
+    assert "Remux failed" in finished[0].output
+    assert ts.exists()
+
+
+def test_stop_defers_finalize_if_worker_alive(tmp_path: Path) -> None:
+    rec = Recorder(str(tmp_path), "{channel}_{date}_{time}", quality="best")
+    usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
+    release = threading.Event()
+
+    def fake_download(urls):  # noqa: ARG001
+        release.wait(timeout=5)
+        return 0
+
+    ydl = MagicMock()
+    ydl.download.side_effect = fake_download
+    ydl.__enter__ = MagicMock(return_value=ydl)
+    ydl.__exit__ = MagicMock(return_value=False)
+
+    with patch("src.recorder.shutil.disk_usage", return_value=usage):
+        with patch("src.recorder.YoutubeDL", return_value=ydl):
+            with patch.object(threading.Thread, "join", lambda self, timeout=None: None):
+                rec.start("xqc")
+                time.sleep(0.05)
+                result = rec.stop("xqc")
+
+            assert result is None
+            assert rec.is_recording("xqc")
+            release.set()
+            # Let worker finish, then reap
+            for _ in range(50):
+                info = rec.get_info("xqc")
+                if info is not None and not info.is_alive():
+                    break
+                time.sleep(0.01)
+            rec.reap_finished()
 
 
 def test_channel_status_properties() -> None:
