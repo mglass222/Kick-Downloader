@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -213,19 +215,93 @@ def test_start_rejects_low_disk_space(tmp_path: Path) -> None:
     assert not rec.is_recording("xqc")
 
 
-def test_start_passes_quality_format(tmp_path: Path) -> None:
+def test_start_uses_youtubedl(tmp_path: Path) -> None:
     rec = Recorder(str(tmp_path), "{channel}_{date}_{time}", quality="720p")
     usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
-    proc = MagicMock()
-    proc.poll.return_value = None
+    ydl = MagicMock()
+    ydl.download.return_value = 0
+    ydl.__enter__ = MagicMock(return_value=ydl)
+    ydl.__exit__ = MagicMock(return_value=False)
+
     with patch("src.recorder.shutil.disk_usage", return_value=usage):
-        with patch("src.recorder.subprocess.Popen", return_value=proc) as popen:
-            with patch("builtins.open", MagicMock()):
-                path = rec.start("xqc")
+        with patch("src.recorder.YoutubeDL", return_value=ydl) as ydl_cls:
+            path = rec.start("xqc")
+            # Allow worker thread to run
+            import time as _time
+
+            for _ in range(50):
+                if ydl.download.called:
+                    break
+                _time.sleep(0.01)
+            rec.stop("xqc")
+
     assert path.suffix == ".mp4"
-    cmd = popen.call_args.args[0]
-    assert "-f" in cmd
-    assert cmd[cmd.index("-f") + 1] == "best[height<=720]/best"
+    assert ydl_cls.called
+    opts = ydl_cls.call_args.args[0]
+    assert opts["format"] == "best[height<=720]/best"
+    assert opts["nopart"] is True
+    assert opts["live_from_start"] is False
+    ydl.download.assert_called()
+    assert ydl.download.call_args.args[0] == ["https://kick.com/xqc"]
+
+
+def test_stop_cancels_download(tmp_path: Path) -> None:
+    rec = Recorder(str(tmp_path), "{channel}_{date}_{time}", quality="best")
+    usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
+    started = threading.Event()
+
+    def fake_download(urls):  # noqa: ARG001
+        started.set()
+        # Simulate progress hooks being invoked by YoutubeDL
+        # The real hook is inside opts; just block until cancel
+        info = rec.get_info("xqc")
+        assert info is not None
+        while not info.cancel.is_set():
+            time.sleep(0.01)
+        from yt_dlp.utils import DownloadCancelled
+
+        raise DownloadCancelled("stopped by user")
+
+    ydl = MagicMock()
+    ydl.download.side_effect = fake_download
+    ydl.__enter__ = MagicMock(return_value=ydl)
+    ydl.__exit__ = MagicMock(return_value=False)
+
+    with patch("src.recorder.shutil.disk_usage", return_value=usage):
+        with patch("src.recorder.YoutubeDL", return_value=ydl):
+            rec.start("xqc")
+            assert started.wait(timeout=2)
+            assert rec.is_recording("xqc")
+            result = rec.stop("xqc")
+
+    assert result is not None
+    assert not rec.is_recording("xqc")
+    assert result.failed is False
+
+
+def test_worker_exception_marks_failed(tmp_path: Path) -> None:
+    rec = Recorder(str(tmp_path), "{channel}_{date}_{time}", quality="best")
+    usage = MagicMock(free=MIN_FREE_BYTES + 1, total=10**12, used=0)
+    ydl = MagicMock()
+    ydl.download.side_effect = RuntimeError("boom")
+    ydl.__enter__ = MagicMock(return_value=ydl)
+    ydl.__exit__ = MagicMock(return_value=False)
+
+    with patch("src.recorder.shutil.disk_usage", return_value=usage):
+        with patch("src.recorder.YoutubeDL", return_value=ydl):
+            rec.start("xqc")
+            import time as _time
+
+            for _ in range(50):
+                info = rec.get_info("xqc")
+                if info is not None and not info.is_alive():
+                    break
+                _time.sleep(0.01)
+            finished = rec.reap_finished()
+
+    assert len(finished) == 1
+    assert finished[0].failed is True
+    assert finished[0].exit_code == 1
 
 
 def test_channel_status_properties() -> None:
