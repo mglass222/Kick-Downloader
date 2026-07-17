@@ -18,9 +18,9 @@ log = logging.getLogger(__name__)
 
 def open_directory(path: Path) -> None:
     """Open ``path`` in the system file manager (macOS/Linux/Windows)."""
-    path.mkdir(parents=True, exist_ok=True)
     system = platform.system()
     try:
+        path.mkdir(parents=True, exist_ok=True)
         if system == "Darwin":
             subprocess.Popen(["open", str(path)])  # noqa: S603
         elif system == "Windows":
