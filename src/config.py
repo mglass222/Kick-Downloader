@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -44,11 +44,17 @@ class Settings:
         output_dir: Directory where per-channel recording folders are created.
         filename_template: Format string with ``{channel}``, ``{date}``,
             and ``{time}`` placeholders.
+        quality: Preferred stream quality (`best`, `1080p`, `720p`, `480p`,
+            `worst`).
     """
 
     poll_interval_seconds: int = 60
     output_dir: str = "./recordings"
     filename_template: str = "{channel}_{date}_{time}"
+    quality: str = "best"
+
+
+QUALITY_CHOICES = ("best", "1080p", "720p", "480p", "worst")
 
 
 @dataclass
@@ -69,7 +75,7 @@ class AppConfig:
         path.write_text(json.dumps(data, indent=2))
 
     @classmethod
-    def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> "AppConfig":
+    def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> AppConfig:
         """Load config from ``path``, creating defaults if missing.
 
         Corrupt JSON is moved to ``*.json.bak`` and replaced with defaults.
@@ -163,10 +169,15 @@ def _settings_from_dict(raw: dict) -> Settings:
             cleaned["poll_interval_seconds"] = int(cleaned["poll_interval_seconds"])
         except (ValueError, TypeError):
             cleaned["poll_interval_seconds"] = 60
+    if "quality" in cleaned:
+        quality = str(cleaned["quality"]).strip().lower()
+        cleaned["quality"] = quality if quality in QUALITY_CHOICES else "best"
     try:
         settings = Settings(**cleaned)
     except TypeError:
         return Settings()
     if settings.poll_interval_seconds < 10:
         settings.poll_interval_seconds = 10
+    if settings.quality not in QUALITY_CHOICES:
+        settings.quality = "best"
     return settings

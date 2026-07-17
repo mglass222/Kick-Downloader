@@ -8,6 +8,7 @@ ffmpeg. All mutations of the active-recording map are guarded by a lock.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -16,6 +17,26 @@ from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Refuse to start a recording when free space is below this threshold
+MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+
+QUALITY_FORMATS: dict[str, str] = {
+    "best": "best",
+    "1080p": "best[height<=1080]/best",
+    "720p": "best[height<=720]/best",
+    "480p": "best[height<=480]/best",
+    "worst": "worst",
+}
+
+
+class RecordingStartError(RuntimeError):
+    """Raised when a recording cannot be started (e.g. low disk space)."""
+
+
+def quality_to_format(quality: str) -> str:
+    """Map a settings quality label to a yt-dlp ``-f`` format expression."""
+    return QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
 
 
 @dataclass
@@ -74,15 +95,25 @@ class Recorder:
     :meth:`stop`) to remux and remove dead entries.
     """
 
-    def __init__(self, output_dir: str, filename_template: str) -> None:
+    def __init__(
+        self,
+        output_dir: str,
+        filename_template: str,
+        quality: str = "best",
+        min_free_bytes: int = MIN_FREE_BYTES,
+    ) -> None:
         """Create a recorder writing under ``output_dir``.
 
         Args:
             output_dir: Root folder for per-channel recording directories.
             filename_template: Format with ``{channel}``, ``{date}``, ``{time}``.
+            quality: Preferred quality label (see :data:`QUALITY_FORMATS`).
+            min_free_bytes: Minimum free disk space required to start.
         """
         self.output_dir = Path(output_dir)
         self.filename_template = filename_template
+        self.quality = quality
+        self.min_free_bytes = min_free_bytes
         self._active: dict[str, RecordingInfo] = {}
         self._lock = threading.Lock()
 
@@ -126,6 +157,9 @@ class Recorder:
         If already recording, returns the existing output path. A stale
         dead entry for the same slug is finalized before a new start.
 
+        Raises:
+            RecordingStartError: If free disk space is below the threshold.
+
         Returns:
             Path to the eventual ``.mp4`` output file.
         """
@@ -136,6 +170,16 @@ class Recorder:
             if existing is not None:
                 # Stale dead entry — finalize before starting a new one
                 self._finalize_locked(existing, expected_stop=False)
+
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(self.output_dir).free
+            if free < self.min_free_bytes:
+                free_gib = free / (1024**3)
+                need_gib = self.min_free_bytes / (1024**3)
+                raise RecordingStartError(
+                    f"Insufficient disk space ({free_gib:.1f} GiB free, "
+                    f"need {need_gib:.1f} GiB) in {self.output_dir}"
+                )
 
             channel_dir = self.output_dir / slug
             channel_dir.mkdir(parents=True, exist_ok=True)
@@ -151,9 +195,11 @@ class Recorder:
             ts_path = channel_dir / (filename + ".ts")
             output_path = channel_dir / (filename + ".mp4")
 
+            fmt = quality_to_format(self.quality)
             cmd = [
                 "yt-dlp",
                 f"https://kick.com/{slug}",
+                "-f", fmt,
                 "-o", str(ts_path),
                 "--no-part",
                 "--no-live-from-start",
@@ -161,7 +207,12 @@ class Recorder:
             ]
 
             log_path = channel_dir / (filename + ".ytdlp.log")
-            log.info("Starting recording for '%s' → %s", slug, output_path)
+            log.info(
+                "Starting recording for '%s' → %s (quality=%s)",
+                slug,
+                output_path,
+                self.quality,
+            )
             log_file = open(log_path, "w")  # noqa: SIM115
             process = subprocess.Popen(
                 cmd,
@@ -227,7 +278,9 @@ class Recorder:
         # Capture process and cleanup state before releasing lock
         process = info.process
         log_path = info.log_path
-        should_cleanup_log = (exit_code == 0 or expected_stop) and log_path and log_path.exists()
+        should_cleanup_log = (
+            (exit_code == 0 or expected_stop) and log_path and log_path.exists()
+        )
 
         # Release lock before blocking operations
         self._lock.release()

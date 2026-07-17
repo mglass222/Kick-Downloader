@@ -11,12 +11,12 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .config import AppConfig
 from .kick_api import ChannelStatus, LiveState, get_channel_status
-from .recorder import Recorder
+from .recorder import Recorder, RecordingStartError
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ class StreamMonitor:
         self.recorder = Recorder(
             output_dir=config.settings.output_dir,
             filename_template=config.settings.filename_template,
+            quality=config.settings.quality,
         )
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -90,9 +91,10 @@ class StreamMonitor:
         self.on_event(slug, "recording_stopped", "Recording stopped manually")
 
     def update_settings(self) -> None:
-        """Re-apply output dir and filename template from the shared config."""
+        """Re-apply output dir, template, and quality from the shared config."""
         self.recorder.output_dir = Path(self.config.settings.output_dir)
         self.recorder.filename_template = self.config.settings.filename_template
+        self.recorder.quality = self.config.settings.quality
 
     # ── Background thread ────────────────────────────────────
 
@@ -188,7 +190,11 @@ class StreamMonitor:
             if not is_recording:
                 title = status.title or ""
                 self.on_event(slug, "live", f"LIVE — {title}")
-                path = self.recorder.start(slug)
+                try:
+                    path = self.recorder.start(slug)
+                except RecordingStartError as exc:
+                    self.on_event(slug, "recording_failed", str(exc))
+                    return
                 self.on_event(slug, "recording_started", f"Recording → {path.name}")
             else:
                 title = status.title or ""
