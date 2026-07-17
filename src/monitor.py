@@ -73,16 +73,19 @@ class StreamMonitor:
         self.on_event("", "monitor", "Monitoring started")
 
     def stop(self) -> None:
-        """Stop polling, wait briefly for the thread, and stop all recordings."""
-        if not self.running:
-            return
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=10)
+        """Stop polling (if running) and always stop all recordings.
+
+        Recordings are stopped even when the poll thread is idle so a
+        manual recording cannot survive shutdown.
+        """
+        if self.running:
+            self._stop_event.set()
+            if self._thread:
+                self._thread.join(timeout=10)
+            self._thread = None
+            self._offline_streak.clear()
+            self.on_event("", "monitor", "Monitoring stopped")
         self.recorder.stop_all()
-        self._thread = None
-        self._offline_streak.clear()
-        self.on_event("", "monitor", "Monitoring stopped")
 
     def stop_recording(self, slug: str) -> None:
         """Manually stop recording for ``slug`` and emit ``recording_stopped``."""

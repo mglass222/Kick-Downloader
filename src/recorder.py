@@ -116,7 +116,8 @@ class FinishedRecording:
         elapsed_seconds: How long the download ran.
         output: Tail of the yt-dlp log for diagnostics.
         failed: True when the exit looks like a failure (non-zero or
-            very short), unless the stop was expected/manual.
+            very short), unless the stop was expected/manual; also True
+            when remux to ``.mp4`` fails.
     """
 
     slug: str
@@ -176,7 +177,7 @@ class Recorder:
 
     def reap_finished(self) -> list[FinishedRecording]:
         """Remux and clean up any recordings whose worker has exited."""
-        finished: list[FinishedRecording] = []
+        to_finalize: list[RecordingInfo] = []
         with self._lock:
             dead = [
                 slug
@@ -184,10 +185,10 @@ class Recorder:
                 if not info.is_alive()
             ]
             for slug in dead:
-                info = self._active[slug]
-                result = self._finalize_locked(info, expected_stop=False)
-                finished.append(result)
-        return finished
+                to_finalize.append(self._active.pop(slug))
+        return [
+            self._finalize(info, expected_stop=False) for info in to_finalize
+        ]
 
     def start(self, slug: str) -> Path:
         """Start recording a channel on a daemon worker thread.
@@ -196,46 +197,63 @@ class Recorder:
         dead entry for the same slug is finalized before a new start.
 
         Raises:
-            RecordingStartError: If free disk space is below the threshold.
+            RecordingStartError: If free disk space is below the threshold,
+                or directory/template setup fails.
 
         Returns:
             Path to the eventual ``.mp4`` output file.
         """
+        stale: RecordingInfo | None = None
         with self._lock:
             existing = self._active.get(slug)
             if existing is not None and existing.is_alive():
                 return existing.output_path
             if existing is not None:
-                self._finalize_locked(existing, expected_stop=False)
+                stale = self._active.pop(slug)
 
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            free = shutil.disk_usage(self.output_dir).free
-            if free < self.min_free_bytes:
-                free_gib = free / (1024**3)
-                need_gib = self.min_free_bytes / (1024**3)
-                raise RecordingStartError(
-                    f"Insufficient disk space ({free_gib:.1f} GiB free, "
-                    f"need {need_gib:.1f} GiB) in {self.output_dir}"
+        if stale is not None:
+            self._finalize(stale, expected_stop=False)
+
+        with self._lock:
+            existing = self._active.get(slug)
+            if existing is not None and existing.is_alive():
+                return existing.output_path
+
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                free = shutil.disk_usage(self.output_dir).free
+                if free < self.min_free_bytes:
+                    free_gib = free / (1024**3)
+                    need_gib = self.min_free_bytes / (1024**3)
+                    raise RecordingStartError(
+                        f"Insufficient disk space ({free_gib:.1f} GiB free, "
+                        f"need {need_gib:.1f} GiB) in {self.output_dir}"
+                    )
+
+                channel_dir = self.output_dir / slug
+                channel_dir.mkdir(parents=True, exist_ok=True)
+
+                now = datetime.now()
+                filename = self.filename_template.format(
+                    channel=slug,
+                    date=now.strftime("%Y-%m-%d"),
+                    time=now.strftime("%H-%M-%S"),
                 )
-
-            channel_dir = self.output_dir / slug
-            channel_dir.mkdir(parents=True, exist_ok=True)
-
-            now = datetime.now()
-            filename = self.filename_template.format(
-                channel=slug,
-                date=now.strftime("%Y-%m-%d"),
-                time=now.strftime("%H-%M-%S"),
-            )
-            if filename.endswith(".mp4"):
-                filename = filename[:-4]
-            # Prefer .ts container; yt-dlp may still choose another ext
-            outtmpl = str(channel_dir / (filename + ".%(ext)s"))
-            ts_path = channel_dir / (filename + ".ts")
-            output_path = channel_dir / (filename + ".mp4")
-            log_path = channel_dir / (filename + ".ytdlp.log")
-            if log_path.exists():
-                log_path.unlink()
+                if filename.endswith(".mp4"):
+                    filename = filename[:-4]
+                # Prefer .ts container; yt-dlp may still choose another ext
+                outtmpl = str(channel_dir / (filename + ".%(ext)s"))
+                ts_path = channel_dir / (filename + ".ts")
+                output_path = channel_dir / (filename + ".mp4")
+                log_path = channel_dir / (filename + ".ytdlp.log")
+                if log_path.exists():
+                    log_path.unlink()
+            except RecordingStartError:
+                raise
+            except (OSError, ValueError, KeyError) as exc:
+                raise RecordingStartError(
+                    f"Cannot start recording for '{slug}': {exc}"
+                ) from exc
 
             cancel = threading.Event()
             # Placeholder thread replaced immediately after info is constructed
@@ -334,8 +352,11 @@ class Recorder:
     def stop(self, slug: str) -> FinishedRecording | None:
         """Request cancel and finalize recording for ``slug``.
 
+        If the worker does not exit within the join timeout, the entry is
+        left active and ``None`` is returned (no remux while still writing).
+
         Returns:
-            Finalize result, or None if nothing was active for ``slug``.
+            Finalize result, or None if nothing was active / still running.
         """
         with self._lock:
             info = self._active.get(slug)
@@ -351,13 +372,21 @@ class Recorder:
         if thread is not None:
             thread.join(timeout=30)
             if thread.is_alive():
-                log.warning("Download worker did not exit for '%s'", slug)
+                log.warning(
+                    "Download worker did not exit for '%s' — deferring finalize",
+                    slug,
+                )
+                return None
 
         with self._lock:
             info = self._active.get(slug)
             if info is None:
                 return None
-            return self._finalize_locked(info, expected_stop=True)
+            if info.is_alive():
+                return None
+            self._active.pop(slug)
+
+        return self._finalize(info, expected_stop=True)
 
     def stop_all(self) -> None:
         """Stop every active recording."""
@@ -366,12 +395,13 @@ class Recorder:
         for slug in slugs:
             self.stop(slug)
 
-    def _finalize_locked(
+    def _finalize(
         self, info: RecordingInfo, *, expected_stop: bool
     ) -> FinishedRecording:
-        """Capture state, remux, and remove ``info`` from ``_active``.
+        """Remux and build a :class:`FinishedRecording`.
 
-        Caller must hold ``self._lock``. The lock is released before remux.
+        Caller must already have removed ``info`` from ``_active``.
+        Must not be called while holding ``self._lock``.
         """
         elapsed = info.elapsed_seconds()
         exit_code = info.exit_code if info.exit_code is not None else -1
@@ -379,21 +409,24 @@ class Recorder:
         if info.error and info.error not in output:
             output = (output + "\n" + info.error).strip()
 
-        self._active.pop(info.slug, None)
+        remux_ok, remux_error = self._remux_to_mp4(info)
+        if remux_error:
+            output = (output + "\n" + remux_error).strip()
+
         log_path = info.log_path
         should_cleanup_log = (
-            (exit_code == 0 or expected_stop) and log_path and log_path.exists()
+            remux_ok
+            and (exit_code == 0 or expected_stop)
+            and log_path is not None
+            and log_path.exists()
         )
+        if should_cleanup_log and log_path is not None:
+            log_path.unlink(missing_ok=True)
 
-        self._lock.release()
-        try:
-            self._remux_to_mp4(info)
-            if should_cleanup_log and log_path is not None:
-                log_path.unlink(missing_ok=True)
-        finally:
-            self._lock.acquire()
-
-        failed = (not expected_stop) and (exit_code != 0 or elapsed < 30)
+        failed = (
+            ((not expected_stop) and (exit_code != 0 or elapsed < 30))
+            or not remux_ok
+        )
         return FinishedRecording(
             slug=info.slug,
             exit_code=exit_code,
@@ -416,11 +449,15 @@ class Recorder:
         except OSError:
             return ""
 
-    def _remux_to_mp4(self, info: RecordingInfo) -> None:
+    def _remux_to_mp4(self, info: RecordingInfo) -> tuple[bool, str | None]:
         """Remux the recorded media to a QuickTime-compatible ``.mp4``.
 
         Only deletes the source when ffmpeg exits 0 and the ``.mp4`` is
         non-empty. On failure the source is kept.
+
+        Returns:
+            ``(True, None)`` when remux succeeds or there is nothing to remux.
+            ``(False, error)`` when remux was attempted and failed.
         """
         src = info.ts_path
         if src is None or not src.exists():
@@ -428,7 +465,7 @@ class Recorder:
             candidate = info.output_path.with_suffix(".ts")
             src = candidate if candidate.exists() else None
         if src is None or not src.exists() or src.stat().st_size == 0:
-            return
+            return True, None
         mp4_path = info.output_path
         log.info("Remuxing %s → %s", src, mp4_path)
         try:
@@ -451,19 +488,26 @@ class Recorder:
                 if src.resolve() != mp4_path.resolve():
                     src.unlink(missing_ok=True)
                 log.info("Remux complete: %s", mp4_path)
-            else:
-                err = (result.stderr or "").strip().splitlines()
-                last = err[-1] if err else f"exit {result.returncode}"
-                log.error(
-                    "Remux failed for %s (%s), keeping source",
-                    src,
-                    last,
-                )
-                if mp4_path.exists() and mp4_path.stat().st_size == 0:
-                    mp4_path.unlink(missing_ok=True)
-        except FileNotFoundError:
+                return True, None
+            err = (result.stderr or "").strip().splitlines()
+            last = err[-1] if err else f"exit {result.returncode}"
+            message = f"Remux failed ({last})"
             log.error(
-                "ffmpeg not found — install it to get QuickTime-compatible .mp4 files"
+                "Remux failed for %s (%s), keeping source",
+                src,
+                last,
             )
+            if mp4_path.exists() and mp4_path.stat().st_size == 0:
+                mp4_path.unlink(missing_ok=True)
+            return False, message
+        except FileNotFoundError:
+            message = (
+                "ffmpeg not found — install it to get QuickTime-compatible "
+                ".mp4 files"
+            )
+            log.error("%s", message)
+            return False, message
         except subprocess.TimeoutExpired:
-            log.error("Remux timed out for %s", src)
+            message = f"Remux timed out for {src}"
+            log.error("%s", message)
+            return False, message

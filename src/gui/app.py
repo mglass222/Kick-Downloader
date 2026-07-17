@@ -329,7 +329,6 @@ class App(ctk.CTk):
 
     def _on_close(self) -> None:
         """Gracefully stop recordings before destroying the window."""
-        if self.monitor.running:
-            self._log("Shutting down — stopping all recordings...")
-            self.monitor.stop()
+        self._log("Shutting down — stopping all recordings...")
+        self.monitor.stop()
         self.destroy()

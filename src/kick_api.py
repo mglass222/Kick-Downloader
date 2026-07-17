@@ -161,9 +161,23 @@ def get_channel_status(slug: str) -> ChannelStatus:
             time.sleep(_backoff_seconds(attempt))
             continue
 
+        if not isinstance(data, dict):
+            return ChannelStatus(
+                slug=slug,
+                state=LiveState.ERROR,
+                error="Invalid API response: expected JSON object",
+            )
+
         livestream = data.get("livestream")
         if not livestream:
             return ChannelStatus(slug=slug, state=LiveState.OFFLINE)
+
+        if not isinstance(livestream, dict):
+            return ChannelStatus(
+                slug=slug,
+                state=LiveState.ERROR,
+                error="Invalid API response: livestream must be an object",
+            )
 
         return ChannelStatus(
             slug=slug,
