@@ -141,7 +141,7 @@ Kick-downloader/
 │   ├── config.py             # Settings and streamer list persistence
 │   ├── kick_api.py           # Kick.com API client (live detection)
 │   ├── monitor.py            # Background polling loop
-│   ├── recorder.py           # yt-dlp subprocess management
+│   ├── recorder.py           # yt-dlp Python API recording workers
 │   └── gui/
 │       ├── app.py            # Main application window
 │       ├── streamer_list.py  # Streamer table widget
@@ -163,11 +163,11 @@ ruff check src tests
 
 1. **Polling** — A background thread queries `https://kick.com/api/v2/channels/{slug}` for each enabled streamer. Wait time is randomized around your configured poll interval. Requests use `curl_cffi` to impersonate a Chrome browser TLS fingerprint, which is necessary to avoid Kick's bot detection (403 responses). Transient API errors are retried with short exponential backoff and treated as unknown (not offline) so active recordings are not stopped. Confirmed offline requires two consecutive offline polls before a recording is stopped.
 
-2. **Recording** — When a channel's `livestream` field is non-null, the app spawns a `yt-dlp` subprocess pointed at `https://kick.com/{slug}`. yt-dlp extracts the HLS stream URL and records it to a `.ts` file.
+2. **Recording** — When a channel's `livestream` field is non-null, the app starts a daemon worker thread that embeds the yt-dlp Python API (`YoutubeDL`) against `https://kick.com/{slug}`. The stream is written to disk (typically `.ts`); stopping cooperatively cancels via a progress hook.
 
-3. **Remux** — When a recording ends (stream goes offline, manual stop, or app close), the `.ts` file is remuxed to a QuickTime-compatible `.mp4` using `ffmpeg -c copy -movflags +faststart`. The original `.ts` is deleted after a successful remux.
+3. **Remux** — When a recording ends (stream goes offline, manual stop, or app close), the file is remuxed to a QuickTime-compatible `.mp4` using `ffmpeg -c copy -movflags +faststart`. The original source is deleted after a successful remux.
 
-4. **Stop detection** — yt-dlp monitors the HLS playlist and exits when the stream ends. The polling loop also detects offline status via the API as a secondary check. Both mechanisms handle raids (which end the stream).
+4. **Stop detection** — yt-dlp exits when the live playlist ends; the app can also cancel mid-download. The polling loop detects confirmed offline status via the API (two consecutive offline polls) as a secondary check. Both mechanisms handle raids.
 
 ## Troubleshooting
 
@@ -176,7 +176,7 @@ ruff check src tests
 | `ModuleNotFoundError: No module named 'tkinter'` | macOS: `brew install python-tk@X.Y` (match `X.Y` to your Homebrew Python version). Linux: `sudo apt install python3-tk` |
 | `403 Forbidden` from Kick API | Ensure `curl_cffi` is installed via `pip install -r requirements.txt`. Plain HTTP clients are blocked by Kick's bot detection. |
 | Timeouts when polling | Kick's API can be slow. The default 30-second timeout handles most cases. Check your network connection. |
-| `yt-dlp` not found | Make sure `yt-dlp` is installed in your venv: `pip install yt-dlp` |
+| `yt-dlp` / import errors | Ensure the venv has yt-dlp: `pip install -r requirements.txt` (the app embeds the Python API; a separate CLI binary on PATH is not required). |
 | Recording file is 0 bytes | The stream may have ended before data was captured. Check that ffmpeg is installed. |
 | Insufficient disk space | Free at least 1 GiB on the output drive, or change the output directory. |
 | MP4 not compatible with QuickTime | Ensure ffmpeg is installed. The remux step requires it to produce a valid `.mp4` container. |
