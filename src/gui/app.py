@@ -83,6 +83,7 @@ class App(ctk.CTk):
             self,
             settings=self.config_data.settings,
             on_change=self._on_settings_change,
+            on_error=self._log,
         )
         self._settings_panel.pack(side="bottom", fill="x", padx=10, pady=4)
 

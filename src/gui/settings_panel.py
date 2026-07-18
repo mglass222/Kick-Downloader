@@ -16,7 +16,9 @@ from ..config import QUALITY_CHOICES, Settings
 log = logging.getLogger(__name__)
 
 
-def open_directory(path: Path) -> None:
+def open_directory(
+    path: Path, on_error: Callable[[str], None] | None = None
+) -> None:
     """Open ``path`` in the system file manager (macOS/Linux/Windows)."""
     system = platform.system()
     try:
@@ -28,7 +30,10 @@ def open_directory(path: Path) -> None:
         else:
             subprocess.Popen(["xdg-open", str(path)])  # noqa: S603
     except (FileNotFoundError, OSError) as exc:
-        log.warning("Could not open directory %s: %s", path, exc)
+        error_msg = f"Could not open directory {path}: {exc}"
+        log.warning(error_msg)
+        if on_error:
+            on_error(error_msg)
 
 
 class SettingsPanel(ctk.CTkFrame):
@@ -43,6 +48,7 @@ class SettingsPanel(ctk.CTkFrame):
         master: ctk.CTkBaseClass,
         settings: Settings,
         on_change: Callable[[Settings], None],
+        on_error: Callable[[str], None] | None = None,
         **kwargs,
     ) -> None:
         """Create the settings controls bound to ``settings``.
@@ -51,10 +57,12 @@ class SettingsPanel(ctk.CTkFrame):
             master: Parent widget.
             settings: Live settings object (mutated in place).
             on_change: Called after each successful apply.
+            on_error: Optional callback for error messages (e.g., directory open failures).
         """
         super().__init__(master, **kwargs)
         self._settings = settings
         self._on_change = on_change
+        self._on_error = on_error
 
         label = ctk.CTkLabel(
             self, text="Settings", font=ctk.CTkFont(size=11), text_color="#888888"
@@ -118,7 +126,9 @@ class SettingsPanel(ctk.CTkFrame):
     def _open_folder(self) -> None:
         """Open the configured output directory in the system file manager."""
         self._apply()
-        open_directory(Path(self._settings.output_dir).expanduser())
+        open_directory(
+            Path(self._settings.output_dir).expanduser(), on_error=self._on_error
+        )
 
     def _apply(self) -> None:
         """Validate inputs, update ``settings``, and notify ``on_change``."""
