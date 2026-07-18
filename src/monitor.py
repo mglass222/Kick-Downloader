@@ -1,4 +1,9 @@
-"""Background polling loop that monitors streamers and triggers recordings."""
+"""Background polling loop that monitors streamers and triggers recordings.
+
+The monitor runs on a daemon thread, reports events through a callback
+(marshaled onto the GUI thread by the app), and coordinates with
+:class:`~src.recorder.Recorder` for start/stop/reap.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +11,12 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .config import AppConfig
 from .kick_api import ChannelStatus, LiveState, get_channel_status
-from .recorder import Recorder
+from .recorder import Recorder, RecordingStartError
 
 log = logging.getLogger(__name__)
 
@@ -23,14 +28,28 @@ OFFLINE_CONFIRM_POLLS = 2
 
 
 class StreamMonitor:
-    """Polls Kick API in a background thread and manages recordings."""
+    """Polls Kick API in a background thread and manages recordings.
+
+    Event names passed to ``on_event`` include ``monitor``, ``poll``,
+    ``live``, ``status``, ``status_offline``, ``offline``,
+    ``recording_started``, ``recording_ended``, ``recording_failed``,
+    ``recording_stopped``, ``api_error``, and ``next_check``.
+    """
 
     def __init__(self, config: AppConfig, on_event: EventCallback | None = None) -> None:
+        """Create a monitor bound to ``config``.
+
+        Args:
+            config: Shared app config (read for enabled slugs and settings).
+            on_event: Optional ``(slug, event, detail)`` callback. Empty
+                ``slug`` means a global/monitor-level message.
+        """
         self.config = config
         self.on_event = on_event or (lambda *_: None)
         self.recorder = Recorder(
             output_dir=config.settings.output_dir,
             filename_template=config.settings.filename_template,
+            quality=config.settings.quality,
         )
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -41,9 +60,11 @@ class StreamMonitor:
 
     @property
     def running(self) -> bool:
+        """True while the background poll thread is alive."""
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
+        """Start the background polling thread if it is not already running."""
         if self.running:
             return
         self._stop_event.clear()
@@ -52,29 +73,36 @@ class StreamMonitor:
         self.on_event("", "monitor", "Monitoring started")
 
     def stop(self) -> None:
-        if not self.running:
-            return
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=10)
+        """Stop polling (if running) and always stop all recordings.
+
+        Recordings are stopped even when the poll thread is idle so a
+        manual recording cannot survive shutdown.
+        """
+        if self.running:
+            self._stop_event.set()
+            if self._thread:
+                self._thread.join(timeout=10)
+            self._thread = None
+            self._offline_streak.clear()
+            self.on_event("", "monitor", "Monitoring stopped")
         self.recorder.stop_all()
-        self._thread = None
-        self._offline_streak.clear()
-        self.on_event("", "monitor", "Monitoring stopped")
 
     def stop_recording(self, slug: str) -> None:
+        """Manually stop recording for ``slug`` and emit ``recording_stopped``."""
         self.recorder.stop(slug)
         self._offline_streak.pop(slug, None)
         self.on_event(slug, "recording_stopped", "Recording stopped manually")
 
     def update_settings(self) -> None:
-        """Re-apply settings (output dir, template) from config."""
+        """Re-apply output dir, template, and quality from the shared config."""
         self.recorder.output_dir = Path(self.config.settings.output_dir)
         self.recorder.filename_template = self.config.settings.filename_template
+        self.recorder.quality = self.config.settings.quality
 
     # ── Background thread ────────────────────────────────────
 
     def _run(self) -> None:
+        """Poll loop: check channels, then sleep a randomized interval."""
         log.info("Monitor thread started")
         while not self._stop_event.is_set():
             self._poll_all()
@@ -86,13 +114,17 @@ class StreamMonitor:
         log.info("Monitor thread exiting")
 
     def _next_wait_seconds(self) -> int:
-        """Randomized wait based on configured poll interval (±50%, min 10s)."""
+        """Return a randomized wait based on configured poll interval.
+
+        Uses roughly 75%–150% of ``poll_interval_seconds``, floored at 10s.
+        """
         base = max(10, int(self.config.settings.poll_interval_seconds))
         low = max(10, int(base * 0.75))
         high = max(low, int(base * 1.5))
         return random.randint(low, high)
 
     def _poll_all(self) -> None:
+        """One full poll cycle over all enabled streamers."""
         # Reap first so dead processes aren't mistaken for "not recording"
         self._reap_finished_recordings()
 
@@ -114,6 +146,7 @@ class StreamMonitor:
         self.on_event("", "next_check", f"Next check in ~{base}s (±)")
 
     def _reap_finished_recordings(self) -> None:
+        """Finalize exited yt-dlp processes and emit success/failure events."""
         for result in self.recorder.reap_finished():
             self._offline_streak.pop(result.slug, None)
             if result.failed:
@@ -138,6 +171,11 @@ class StreamMonitor:
                 )
 
     def _poll_one(self, slug: str) -> None:
+        """Check one channel and start/stop recording based on live state.
+
+        API errors leave an active recording running. Confirmed offline
+        requires :data:`OFFLINE_CONFIRM_POLLS` consecutive hits before stop.
+        """
         status = get_channel_status(slug)
         prev = self._last_status.get(slug)
         self._last_status[slug] = status
@@ -155,7 +193,11 @@ class StreamMonitor:
             if not is_recording:
                 title = status.title or ""
                 self.on_event(slug, "live", f"LIVE — {title}")
-                path = self.recorder.start(slug)
+                try:
+                    path = self.recorder.start(slug)
+                except RecordingStartError as exc:
+                    self.on_event(slug, "recording_failed", str(exc))
+                    return
                 self.on_event(slug, "recording_started", f"Recording → {path.name}")
             else:
                 title = status.title or ""

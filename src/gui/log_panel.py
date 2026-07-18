@@ -1,4 +1,4 @@
-"""Scrollable log panel widget."""
+"""Scrollable activity log panel with a bounded line buffer."""
 
 from __future__ import annotations
 
@@ -11,12 +11,20 @@ _MAX_LINES = 500
 
 
 class LogPanel(ctk.CTkFrame):
+    """Timestamped text log that discards oldest lines past ``max_lines``."""
+
     def __init__(
         self,
         master: ctk.CTkBaseClass,
         max_lines: int = _MAX_LINES,
         **kwargs,
     ) -> None:
+        """Create the log textbox.
+
+        Args:
+            master: Parent widget.
+            max_lines: Maximum retained lines (oldest are dropped first).
+        """
         super().__init__(master, **kwargs)
         self._max_lines = max_lines
         self._line_count = 0
@@ -30,6 +38,7 @@ class LogPanel(ctk.CTkFrame):
         self._textbox.pack(fill="both", expand=True, padx=8, pady=(0, 6))
 
     def log(self, message: str) -> None:
+        """Append a timestamped line and trim if over the line limit."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}\n"
         self._textbox.configure(state="normal")

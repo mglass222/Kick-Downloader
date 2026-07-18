@@ -1,8 +1,15 @@
-"""Manages yt-dlp subprocesses for recording Kick streams."""
+"""yt-dlp Python API management for recording Kick live streams.
+
+Each active channel runs ``YoutubeDL.download`` on a dedicated daemon
+thread. On stop or natural exit the file is remuxed to QuickTime-friendly
+``.mp4`` via ffmpeg. Mutations of the active-recording map are lock-guarded;
+the lock is not held across download or remux.
+"""
 
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import threading
 import time
@@ -10,28 +17,108 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadCancelled
+
 log = logging.getLogger(__name__)
+
+# Refuse to start a recording when free space is below this threshold
+MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+
+QUALITY_FORMATS: dict[str, str] = {
+    "best": "best",
+    "1080p": "best[height<=1080]/best",
+    "720p": "best[height<=720]/best",
+    "480p": "best[height<=480]/best",
+    "worst": "worst",
+}
+
+
+class RecordingStartError(RuntimeError):
+    """Raised when a recording cannot be started (e.g. low disk space)."""
+
+
+def quality_to_format(quality: str) -> str:
+    """Map a settings quality label to a yt-dlp format expression."""
+    return QUALITY_FORMATS.get(quality, QUALITY_FORMATS["best"])
+
+
+class _FileLogger:
+    """Minimal yt-dlp logger that appends messages to a sidecar log file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+
+    def _write(self, level: str, msg: str) -> None:
+        line = f"[{level}] {msg}\n"
+        with self._lock:
+            with self._path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
+
+    def debug(self, msg: str) -> None:
+        if msg.startswith("[debug] "):
+            return
+        self._write("info", msg)
+
+    def info(self, msg: str) -> None:
+        self._write("info", msg)
+
+    def warning(self, msg: str) -> None:
+        self._write("warning", msg)
+
+    def error(self, msg: str) -> None:
+        self._write("error", msg)
 
 
 @dataclass
 class RecordingInfo:
+    """Metadata for one in-progress (or just-exited) yt-dlp recording.
+
+    Attributes:
+        slug: Channel being recorded.
+        output_path: Target ``.mp4`` path after remux.
+        thread: Worker thread running YoutubeDL.
+        cancel: Set to request cooperative cancel via progress hook.
+        started_at: ``time.time()`` when recording started.
+        log_path: Path to the ``.ytdlp.log`` sidecar file.
+        exit_code: 0 success/cancel, 1 error, None while running.
+        error: Last error message from the worker, if any.
+        ts_path: Intermediate transport-stream (or native) path for remux.
+    """
+
     slug: str
     output_path: Path
-    process: subprocess.Popen
+    thread: threading.Thread
+    cancel: threading.Event
     started_at: float = field(default_factory=time.time)
-    log_file: object = field(default=None, repr=False)
     log_path: Path | None = None
+    exit_code: int | None = None
+    error: str | None = None
+    ts_path: Path | None = None
 
     def elapsed_seconds(self) -> float:
+        """Seconds since this recording started."""
         return time.time() - self.started_at
 
     def is_alive(self) -> bool:
-        return self.process.poll() is None
+        """True if the download worker thread is still running."""
+        return self.thread.is_alive()
 
 
 @dataclass
 class FinishedRecording:
-    """Result of reaping a yt-dlp process that has exited."""
+    """Result of finalizing a yt-dlp download that has exited.
+
+    Attributes:
+        slug: Channel that was recorded.
+        exit_code: Worker result code (``-1`` if unknown).
+        elapsed_seconds: How long the download ran.
+        output: Tail of the yt-dlp log for diagnostics.
+        failed: True when the exit looks like a failure (non-zero or
+            very short), unless the stop was expected/manual; also True
+            when remux to ``.mp4`` fails.
+    """
 
     slug: str
     exit_code: int
@@ -41,31 +128,56 @@ class FinishedRecording:
 
 
 class Recorder:
-    """Manages one yt-dlp subprocess per streamer."""
+    """Manages one yt-dlp YoutubeDL worker thread per streamer.
 
-    def __init__(self, output_dir: str, filename_template: str) -> None:
+    ``is_recording`` is read-only; call :meth:`reap_finished` (or
+    :meth:`stop`) to remux and remove dead entries.
+    """
+
+    def __init__(
+        self,
+        output_dir: str,
+        filename_template: str,
+        quality: str = "best",
+        min_free_bytes: int = MIN_FREE_BYTES,
+    ) -> None:
+        """Create a recorder writing under ``output_dir``.
+
+        Args:
+            output_dir: Root folder for per-channel recording directories.
+            filename_template: Format with ``{channel}``, ``{date}``, ``{time}``.
+            quality: Preferred quality label (see :data:`QUALITY_FORMATS`).
+            min_free_bytes: Minimum free disk space required to start.
+        """
         self.output_dir = Path(output_dir)
         self.filename_template = filename_template
+        self.quality = quality
+        self.min_free_bytes = min_free_bytes
         self._active: dict[str, RecordingInfo] = {}
         self._lock = threading.Lock()
 
     def is_recording(self, slug: str) -> bool:
-        """Return True if a yt-dlp process for slug is still running (read-only)."""
+        """Return True if a download worker for ``slug`` is still running.
+
+        This check has no side effects (no remux or cleanup).
+        """
         with self._lock:
             info = self._active.get(slug)
             return info is not None and info.is_alive()
 
     def get_info(self, slug: str) -> RecordingInfo | None:
+        """Return the active :class:`RecordingInfo` for ``slug``, if any."""
         with self._lock:
             return self._active.get(slug)
 
     def active_slugs(self) -> list[str]:
+        """Return slugs currently tracked in the active map (alive or stale)."""
         with self._lock:
             return list(self._active)
 
     def reap_finished(self) -> list[FinishedRecording]:
-        """Remux and clean up any recordings whose process has exited."""
-        finished: list[FinishedRecording] = []
+        """Remux and clean up any recordings whose worker has exited."""
+        to_finalize: list[RecordingInfo] = []
         with self._lock:
             dead = [
                 slug
@@ -73,123 +185,248 @@ class Recorder:
                 if not info.is_alive()
             ]
             for slug in dead:
-                info = self._active[slug]
-                result = self._finalize_locked(info, expected_stop=False)
-                finished.append(result)
-        return finished
+                to_finalize.append(self._active.pop(slug))
+        return [
+            self._finalize(info, expected_stop=False) for info in to_finalize
+        ]
 
     def start(self, slug: str) -> Path:
-        """Start recording a channel. Returns the output file path."""
+        """Start recording a channel on a daemon worker thread.
+
+        If already recording, returns the existing output path. A stale
+        dead entry for the same slug is finalized before a new start.
+
+        Raises:
+            RecordingStartError: If free disk space is below the threshold,
+                or directory/template setup fails.
+
+        Returns:
+            Path to the eventual ``.mp4`` output file.
+        """
+        stale: RecordingInfo | None = None
         with self._lock:
             existing = self._active.get(slug)
             if existing is not None and existing.is_alive():
                 return existing.output_path
             if existing is not None:
-                # Stale dead entry — finalize before starting a new one
-                self._finalize_locked(existing, expected_stop=False)
+                stale = self._active.pop(slug)
 
-            channel_dir = self.output_dir / slug
-            channel_dir.mkdir(parents=True, exist_ok=True)
+        if stale is not None:
+            self._finalize(stale, expected_stop=False)
 
-            now = datetime.now()
-            filename = self.filename_template.format(
-                channel=slug,
-                date=now.strftime("%Y-%m-%d"),
-                time=now.strftime("%H-%M-%S"),
+        with self._lock:
+            existing = self._active.get(slug)
+            if existing is not None and existing.is_alive():
+                return existing.output_path
+
+            try:
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                free = shutil.disk_usage(self.output_dir).free
+                if free < self.min_free_bytes:
+                    free_gib = free / (1024**3)
+                    need_gib = self.min_free_bytes / (1024**3)
+                    raise RecordingStartError(
+                        f"Insufficient disk space ({free_gib:.1f} GiB free, "
+                        f"need {need_gib:.1f} GiB) in {self.output_dir}"
+                    )
+
+                channel_dir = self.output_dir / slug
+                channel_dir.mkdir(parents=True, exist_ok=True)
+
+                now = datetime.now()
+                filename = self.filename_template.format(
+                    channel=slug,
+                    date=now.strftime("%Y-%m-%d"),
+                    time=now.strftime("%H-%M-%S"),
+                )
+                if filename.endswith(".mp4"):
+                    filename = filename[:-4]
+                # Prefer .ts container; yt-dlp may still choose another ext
+                outtmpl = str(channel_dir / (filename + ".%(ext)s"))
+                ts_path = channel_dir / (filename + ".ts")
+                output_path = channel_dir / (filename + ".mp4")
+                log_path = channel_dir / (filename + ".ytdlp.log")
+                if log_path.exists():
+                    log_path.unlink()
+            except RecordingStartError:
+                raise
+            except (OSError, ValueError, KeyError) as exc:
+                raise RecordingStartError(
+                    f"Cannot start recording for '{slug}': {exc}"
+                ) from exc
+
+            cancel = threading.Event()
+            # Placeholder thread replaced immediately after info is constructed
+            info_box: dict[str, RecordingInfo] = {}
+
+            def worker() -> None:
+                self._run_download(info_box["info"], outtmpl)
+
+            thread = threading.Thread(
+                target=worker,
+                name=f"ytdlp-{slug}",
+                daemon=True,
             )
-            if filename.endswith(".mp4"):
-                filename = filename[:-4]
-            ts_path = channel_dir / (filename + ".ts")
-            output_path = channel_dir / (filename + ".mp4")
-
-            cmd = [
-                "yt-dlp",
-                f"https://kick.com/{slug}",
-                "-o", str(ts_path),
-                "--no-part",
-                "--no-live-from-start",
-                "--wait-for-video", "30",
-            ]
-
-            log_path = channel_dir / (filename + ".ytdlp.log")
-            log.info("Starting recording for '%s' → %s", slug, output_path)
-            log_file = open(log_path, "w")  # noqa: SIM115
-            process = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-            )
-
-            self._active[slug] = RecordingInfo(
+            info = RecordingInfo(
                 slug=slug,
                 output_path=output_path,
-                process=process,
-                log_file=log_file,
+                thread=thread,
+                cancel=cancel,
                 log_path=log_path,
+                ts_path=ts_path,
             )
+            info_box["info"] = info
+            self._active[slug] = info
+
+            log.info(
+                "Starting recording for '%s' → %s (quality=%s)",
+                slug,
+                output_path,
+                self.quality,
+            )
+            thread.start()
             return output_path
 
+    def _run_download(self, info: RecordingInfo, outtmpl: str) -> None:
+        """Worker entry: run YoutubeDL until complete, cancelled, or error."""
+        cancel = info.cancel
+
+        def progress_hook(status: dict) -> None:
+            if cancel.is_set():
+                raise DownloadCancelled("stopped by user")
+
+        file_logger = _FileLogger(info.log_path) if info.log_path else None
+        opts: dict = {
+            "format": quality_to_format(self.quality),
+            "outtmpl": outtmpl,
+            "nopart": True,
+            "live_from_start": False,
+            "wait_for_video": 30,
+            "quiet": True,
+            "no_warnings": True,
+            "progress_hooks": [progress_hook],
+        }
+        if file_logger is not None:
+            opts["logger"] = file_logger
+
+        url = f"https://kick.com/{info.slug}"
+        try:
+            with YoutubeDL(opts) as ydl:
+                code = ydl.download([url])
+            info.exit_code = 0 if code == 0 else int(code)
+            if info.exit_code != 0:
+                info.error = f"yt-dlp exited with code {info.exit_code}"
+            # Discover actual download path if ext differed from .ts
+            self._resolve_ts_path(info, outtmpl)
+        except DownloadCancelled:
+            info.exit_code = 0
+            info.error = None
+            self._resolve_ts_path(info, outtmpl)
+            log.info("Recording cancelled for '%s'", info.slug)
+        except Exception as exc:
+            info.exit_code = 1
+            info.error = str(exc)
+            self._resolve_ts_path(info, outtmpl)
+            log.warning("Recording failed for '%s': %s", info.slug, exc)
+
+    @staticmethod
+    def _resolve_ts_path(info: RecordingInfo, outtmpl: str) -> None:
+        """Point ``ts_path`` at the file yt-dlp actually wrote, if any."""
+        # outtmpl like /dir/name.%(ext)s → search for name.*
+        base = outtmpl.replace(".%(ext)s", "")
+        parent = Path(base).parent
+        stem = Path(base).name
+        if info.ts_path and info.ts_path.exists():
+            return
+        candidates = sorted(
+            parent.glob(stem + ".*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            if path.suffix.lower() in {".log", ".mp4"}:
+                continue
+            info.ts_path = path
+            return
+
     def stop(self, slug: str) -> FinishedRecording | None:
-        """Gracefully stop recording a channel."""
+        """Request cancel and finalize recording for ``slug``.
+
+        If the worker does not exit within the join timeout, the entry is
+        left active and ``None`` is returned (no remux while still writing).
+
+        Returns:
+            Finalize result, or None if nothing was active / still running.
+        """
         with self._lock:
             info = self._active.get(slug)
             if info is None:
                 return None
             if info.is_alive():
                 log.info("Stopping recording for '%s'", slug)
-                info.process.terminate()
-                try:
-                    info.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    log.warning("yt-dlp did not exit for '%s', killing", slug)
-                    info.process.kill()
-                    info.process.wait(timeout=5)
-            return self._finalize_locked(info, expected_stop=True)
+                info.cancel.set()
+                thread = info.thread
+            else:
+                thread = None
+
+        if thread is not None:
+            thread.join(timeout=30)
+            if thread.is_alive():
+                log.warning(
+                    "Download worker did not exit for '%s' — deferring finalize",
+                    slug,
+                )
+                return None
+
+        with self._lock:
+            info = self._active.get(slug)
+            if info is None:
+                return None
+            if info.is_alive():
+                return None
+            self._active.pop(slug)
+
+        return self._finalize(info, expected_stop=True)
 
     def stop_all(self) -> None:
-        """Stop all active recordings."""
+        """Stop every active recording."""
         with self._lock:
             slugs = list(self._active)
         for slug in slugs:
             self.stop(slug)
 
-    def _finalize_locked(
+    def _finalize(
         self, info: RecordingInfo, *, expected_stop: bool
     ) -> FinishedRecording:
-        """Close log, capture state, remove from _active. Caller must hold self._lock.
-        Then release lock before remuxing to avoid blocking other operations."""
+        """Remux and build a :class:`FinishedRecording`.
+
+        Caller must already have removed ``info`` from ``_active``.
+        Must not be called while holding ``self._lock``.
+        """
         elapsed = info.elapsed_seconds()
-        self._close_log(info)
-        exit_code = info.process.returncode
-        if exit_code is None:
-            exit_code = -1
+        exit_code = info.exit_code if info.exit_code is not None else -1
         output = self._read_log_tail(info)
+        if info.error and info.error not in output:
+            output = (output + "\n" + info.error).strip()
 
-        # Remove from active dict before releasing lock
-        self._active.pop(info.slug, None)
+        remux_ok, remux_error = self._remux_to_mp4(info)
+        if remux_error:
+            output = (output + "\n" + remux_error).strip()
 
-        # Capture process and cleanup state before releasing lock
-        process = info.process
         log_path = info.log_path
-        should_cleanup_log = (exit_code == 0 or expected_stop) and log_path and log_path.exists()
+        should_cleanup_log = (
+            remux_ok
+            and (exit_code == 0 or expected_stop)
+            and log_path is not None
+            and log_path.exists()
+        )
+        if should_cleanup_log and log_path is not None:
+            log_path.unlink(missing_ok=True)
 
-        # Release lock before blocking operations
-        self._lock.release()
-        try:
-            # Remux outside the lock (can take significant time)
-            self._remux_to_mp4(info)
-
-            # Kill process if still alive
-            if process.poll() is None:
-                process.kill()
-
-            # Keep yt-dlp log on failure for debugging
-            if should_cleanup_log:
-                log_path.unlink(missing_ok=True)
-        finally:
-            self._lock.acquire()
-
-        failed = (not expected_stop) and (exit_code != 0 or elapsed < 30)
+        failed = (
+            ((not expected_stop) and (exit_code != 0 or elapsed < 30))
+            or not remux_ok
+        )
         return FinishedRecording(
             slug=info.slug,
             exit_code=exit_code,
@@ -200,6 +437,7 @@ class Recorder:
 
     @staticmethod
     def _read_log_tail(info: RecordingInfo) -> str:
+        """Return the last lines of the yt-dlp log for error reporting."""
         if not info.log_path or not info.log_path.exists():
             return ""
         try:
@@ -211,17 +449,29 @@ class Recorder:
         except OSError:
             return ""
 
-    def _remux_to_mp4(self, info: RecordingInfo) -> None:
-        """Remux the recorded .ts file to a QuickTime-compatible .mp4."""
-        ts_path = info.output_path.with_suffix(".ts")
+    def _remux_to_mp4(self, info: RecordingInfo) -> tuple[bool, str | None]:
+        """Remux the recorded media to a QuickTime-compatible ``.mp4``.
+
+        Only deletes the source when ffmpeg exits 0 and the ``.mp4`` is
+        non-empty. On failure the source is kept.
+
+        Returns:
+            ``(True, None)`` when remux succeeds or there is nothing to remux.
+            ``(False, error)`` when remux was attempted and failed.
+        """
+        src = info.ts_path
+        if src is None or not src.exists():
+            # Fall back to conventional .ts next to mp4
+            candidate = info.output_path.with_suffix(".ts")
+            src = candidate if candidate.exists() else None
+        if src is None or not src.exists() or src.stat().st_size == 0:
+            return True, None
         mp4_path = info.output_path
-        if not ts_path.exists() or ts_path.stat().st_size == 0:
-            return
-        log.info("Remuxing %s → %s", ts_path, mp4_path)
+        log.info("Remuxing %s → %s", src, mp4_path)
         try:
             result = subprocess.run(
                 [
-                    "ffmpeg", "-y", "-i", str(ts_path),
+                    "ffmpeg", "-y", "-i", str(src),
                     "-c", "copy",
                     "-movflags", "+faststart",
                     str(mp4_path),
@@ -235,26 +485,29 @@ class Recorder:
                 and mp4_path.exists()
                 and mp4_path.stat().st_size > 0
             ):
-                ts_path.unlink()
+                if src.resolve() != mp4_path.resolve():
+                    src.unlink(missing_ok=True)
                 log.info("Remux complete: %s", mp4_path)
-            else:
-                err = (result.stderr or "").strip().splitlines()
-                last = err[-1] if err else f"exit {result.returncode}"
-                log.error(
-                    "Remux failed for %s (%s), keeping .ts",
-                    ts_path,
-                    last,
-                )
-                if mp4_path.exists() and mp4_path.stat().st_size == 0:
-                    mp4_path.unlink(missing_ok=True)
-        except FileNotFoundError:
+                return True, None
+            err = (result.stderr or "").strip().splitlines()
+            last = err[-1] if err else f"exit {result.returncode}"
+            message = f"Remux failed ({last})"
             log.error(
-                "ffmpeg not found — install it to get QuickTime-compatible .mp4 files"
+                "Remux failed for %s (%s), keeping source",
+                src,
+                last,
             )
+            if mp4_path.exists() and mp4_path.stat().st_size == 0:
+                mp4_path.unlink(missing_ok=True)
+            return False, message
+        except FileNotFoundError:
+            message = (
+                "ffmpeg not found — install it to get QuickTime-compatible "
+                ".mp4 files"
+            )
+            log.error("%s", message)
+            return False, message
         except subprocess.TimeoutExpired:
-            log.error("Remux timed out for %s", ts_path)
-
-    @staticmethod
-    def _close_log(info: RecordingInfo) -> None:
-        if info.log_file and not info.log_file.closed:
-            info.log_file.close()
+            message = f"Remux timed out for {src}"
+            log.error("%s", message)
+            return False, message

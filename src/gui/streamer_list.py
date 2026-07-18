@@ -1,8 +1,8 @@
-"""Streamer table widget showing status, recording state, and action buttons."""
+"""Streamer table widget: status, recording state, and action buttons."""
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import customtkinter as ctk
 
@@ -14,7 +14,7 @@ _COL_REC = 110
 
 
 class StreamerRow(ctk.CTkFrame):
-    """A single row in the streamer list."""
+    """One streamer row: enable checkbox, status, REC indicator, actions."""
 
     def __init__(
         self,
@@ -27,6 +27,17 @@ class StreamerRow(ctk.CTkFrame):
         on_toggle_enabled: Callable[[str, bool], None],
         **kwargs,
     ) -> None:
+        """Build the row widgets and wire callbacks.
+
+        Args:
+            master: Parent list frame.
+            slug: Kick channel name shown in the row.
+            enabled: Initial monitoring-enabled checkbox state.
+            on_remove: Called when the remove button is clicked.
+            on_stop_recording: Called when Stop is clicked.
+            on_start_recording: Called when Record is clicked.
+            on_toggle_enabled: Called with ``(slug, enabled)`` on checkbox toggle.
+        """
         super().__init__(master, **kwargs)
         self.slug = slug
         self._on_remove = on_remove
@@ -89,22 +100,26 @@ class StreamerRow(ctk.CTkFrame):
         self._apply_enabled_style()
 
     def _on_enable_clicked(self) -> None:
+        """Handle checkbox toggle and notify the parent."""
         self._enabled = bool(self._enabled_var.get())
         self._apply_enabled_style()
         self._update_action_buttons()
         self._on_toggle_enabled(self.slug, self._enabled)
 
     def set_enabled(self, enabled: bool) -> None:
+        """Programmatically set the enable checkbox and dimmed name style."""
         self._enabled = enabled
         self._enabled_var.set(enabled)
         self._apply_enabled_style()
         self._update_action_buttons()
 
     def _apply_enabled_style(self) -> None:
+        """Dim the channel name when monitoring is disabled."""
         color = "#cccccc" if self._enabled else "#666666"
         self._name_label.configure(text_color=color)
 
     def set_live(self, is_live: bool, title: str = "") -> None:
+        """Update the live/offline status label and action buttons."""
         self._is_live = is_live
         if is_live:
             display = "Live"
@@ -116,6 +131,7 @@ class StreamerRow(ctk.CTkFrame):
         self._update_action_buttons()
 
     def set_recording(self, is_recording: bool, elapsed: str = "") -> None:
+        """Show or clear the REC indicator and highlight the row."""
         self._is_recording = is_recording
         if is_recording:
             self._rec_label.configure(
@@ -132,6 +148,7 @@ class StreamerRow(ctk.CTkFrame):
         self._rec_label.configure(text=f"\u25cf REC {elapsed}")
 
     def _update_action_buttons(self) -> None:
+        """Show Stop while recording, Record when live and enabled."""
         self._stop_btn.pack_forget()
         self._start_btn.pack_forget()
         if self._is_recording:
@@ -164,7 +181,7 @@ def create_header(master: ctk.CTkBaseClass) -> ctk.CTkFrame:
 
 
 class StreamerList(ctk.CTkScrollableFrame):
-    """Scrollable list of streamer rows."""
+    """Scrollable collection of :class:`StreamerRow` widgets."""
 
     def __init__(
         self,
@@ -175,6 +192,7 @@ class StreamerList(ctk.CTkScrollableFrame):
         on_toggle_enabled: Callable[[str, bool], None],
         **kwargs,
     ) -> None:
+        """Create an empty list that forwards row callbacks to the parent."""
         super().__init__(master, **kwargs)
         self._on_remove = on_remove
         self._on_stop_recording = on_stop_recording
@@ -183,6 +201,7 @@ class StreamerList(ctk.CTkScrollableFrame):
         self._rows: dict[str, StreamerRow] = {}
 
     def add_streamer(self, slug: str, enabled: bool = True) -> None:
+        """Add a row for ``slug`` if it is not already present."""
         if slug in self._rows:
             return
         row = StreamerRow(
@@ -197,12 +216,15 @@ class StreamerList(ctk.CTkScrollableFrame):
         self._rows[slug] = row
 
     def remove_streamer(self, slug: str) -> None:
+        """Destroy and forget the row for ``slug`` if present."""
         row = self._rows.pop(slug, None)
         if row:
             row.destroy()
 
     def get_row(self, slug: str) -> StreamerRow | None:
+        """Return the row widget for ``slug``, or None."""
         return self._rows.get(slug)
 
     def all_slugs(self) -> list[str]:
+        """Return the slugs currently shown in the list."""
         return list(self._rows.keys())
