@@ -5,6 +5,7 @@ __pycache__/
 recordings/
 streamers.json
 DEVLOG.md
+PLAN.md
 *.egg-info/
 dist/
 build/
