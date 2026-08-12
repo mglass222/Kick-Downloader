@@ -66,8 +66,8 @@ sudo pacman -S tk ffmpeg
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/mglass222/Kick-downloader.git
-   cd Kick-downloader
+   git clone https://github.com/mglass222/Kick-Downloader.git
+   cd Kick-Downloader
    ```
 
 2. **Create a virtual environment and install dependencies:**
@@ -81,7 +81,7 @@ sudo pacman -S tk ffmpeg
 
 1. **Activate the virtual environment and launch:**
    ```bash
-   cd Kick-downloader
+   cd Kick-Downloader
    source .venv/bin/activate
    python -m src.main
    ```
@@ -128,7 +128,7 @@ Settings and your streamer list are stored in a local `streamers.json` (gitignor
 ## Project Structure
 
 ```
-Kick-downloader/
+Kick-Downloader/
 ├── requirements.txt          # Python dependencies (incl. pytest, ruff)
 ├── pyproject.toml            # Pytest / ruff config
 ├── LICENSE                   # MIT
