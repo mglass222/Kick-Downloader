@@ -100,7 +100,7 @@ sudo pacman -S tk ffmpeg
 
 ## Configuration
 
-Settings and your streamer list are stored in `streamers.json` (created automatically on first run):
+Settings and your streamer list are stored in a local `streamers.json` (gitignored; created automatically on first run — not part of the repo):
 
 ```json
 {
@@ -122,7 +122,7 @@ Settings and your streamer list are stored in `streamers.json` (created automati
 - **Format:** MP4
 - **Quality:** Configurable (`best`, `1080p`, `720p`, `480p`, `worst`)
 - **Filename pattern:** `{channel}_{YYYY-MM-DD}_{HH-MM-SS}.mp4`
-- **Default location:** `./recordings/`
+- **Default location:** `./recordings/` (local only; gitignored)
 - **Disk space:** Recording will not start if free space is under 1 GiB
 
 ## Project Structure
@@ -133,7 +133,6 @@ Kick-downloader/
 ├── pyproject.toml            # Pytest / ruff config
 ├── LICENSE                   # MIT
 ├── .github/workflows/ci.yml  # CI: ruff + pytest
-├── streamers.json            # Streamer list & settings (created at runtime)
 ├── tests/
 │   └── test_core.py          # Unit tests (config, API status, recorder)
 ├── src/
@@ -148,7 +147,8 @@ Kick-downloader/
 │       ├── add_streamer.py   # Add streamer input bar
 │       ├── settings_panel.py # Settings controls
 │       └── log_panel.py      # Activity log panel
-└── recordings/               # Recorded streams (created at runtime)
+├── streamers.json            # Local only (gitignored) — settings & streamers
+└── recordings/               # Local only (gitignored) — recorded streams
 ```
 
 ## Tests
